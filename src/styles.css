@@ -1,0 +1,521 @@
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.12);
+  --series-1: #2a78d6;
+  --accent: #2a78d6;
+  --on-accent: #ffffff;
+  --good: #006300;
+  --critical: #d03b3b;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --text: #f0efec;
+    --text-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.12);
+    --series-1: #3987e5;
+    --accent: #3987e5;
+    --on-accent: #0d0d0d;
+    --good: #0ca30c;
+    --critical: #e66767;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3,
+p,
+ul,
+ol,
+dl,
+figure {
+  margin: 0;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+  padding: 12px 16px calc(88px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Buttons are sized for a thumb, not a mouse: this gets used in a vehicle. */
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-height: 44px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--text-2);
+}
+
+button.danger {
+  color: var(--critical);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  padding-top: calc(8px + env(safe-area-inset-top));
+  min-height: 60px;
+}
+
+.topbar h1 {
+  font-size: 1.25rem;
+  margin-right: auto;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.dot,
+.rec {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+.rec {
+  background: var(--critical);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px;
+  padding: 4px 4px 4px 14px;
+  border: 1px solid var(--critical);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.banner span {
+  flex: 1;
+}
+
+.tabs {
+  position: fixed;
+  inset: auto 0 0 0;
+  display: flex;
+  justify-content: center;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.tabs button {
+  flex: 1;
+  max-width: 240px;
+  min-height: 56px;
+  border: none;
+  border-radius: 0;
+  border-top: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+}
+
+.tabs button.active {
+  color: var(--text);
+  border-top-color: var(--accent);
+  font-weight: 600;
+}
+
+.badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--critical);
+  color: var(--page);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.note,
+.meta,
+.empty,
+.progress {
+  color: var(--text-2);
+  font-size: 0.875rem;
+}
+
+.empty {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.card,
+.connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.card h2,
+.connect h2,
+dialog h2 {
+  font-size: 1.0625rem;
+}
+
+.connect {
+  margin-top: 8px;
+}
+
+.steps {
+  padding-left: 20px;
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 10px;
+}
+
+.tile {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.tile h3 {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile .value {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.unit {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.tile .range {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 24px;
+  margin: 4px 0;
+}
+
+.spark polyline {
+  fill: none;
+  stroke: var(--series-1);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  padding: 16px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.confirm .row {
+  justify-content: flex-end;
+}
+
+.picker label,
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
+.codes li,
+.monitors li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--grid);
+}
+
+.codes b {
+  font-size: 1.125rem;
+}
+
+.codes span,
+.monitors span:first-child {
+  flex: 1;
+  color: var(--text-2);
+}
+
+.monitors .ok {
+  color: var(--good);
+}
+
+.monitors .wait {
+  color: var(--text-2);
+}
+
+a {
+  color: var(--accent);
+}
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  font-size: 0.875rem;
+}
+
+dt {
+  color: var(--text-2);
+}
+
+dd {
+  margin: 0;
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sessions button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  text-align: left;
+  border-radius: 14px;
+}
+
+.sessions span {
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.sessions span:empty {
+  display: none;
+}
+
+.tag {
+  margin: 0 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-style: normal;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.sessions .tag {
+  margin-left: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+textarea {
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 8px 0 8px 12px;
+  text-align: right;
+  border-top: 1px solid var(--grid);
+  white-space: nowrap;
+}
+
+thead th {
+  border-top: none;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+th:first-child {
+  padding-left: 0;
+  text-align: left;
+  font-weight: 500;
+  white-space: normal;
+}
+
+.chart {
+  padding: 12px 8px 4px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.chart figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px 4px 12px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.chart .readout {
+  font-weight: 400;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

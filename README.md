@@ -1,0 +1,76 @@
+# Dipstick
+
+An open-source OBD2 app that runs in the browser. No install, no account, no paywall.
+
+Plug a cheap ELM327 Bluetooth adapter into your vehicle, open the page, and you get live sensor data, trouble codes, and a log of every drive that you can export or hand to an AI assistant for help with diagnosis.
+
+> **Status: early.** It works end to end against the built-in simulated vehicle. Testing on real vehicles and adapters has only just started, so expect rough edges and please report them.
+
+## What it does
+
+- **Live data.** Every standard sensor your vehicle reports: RPM, speed, temperatures, fuel trims, oxygen sensors, airflow, timing and more. You choose which ones to watch.
+- **Automatic logging.** Each connection is recorded as a session, saved every few seconds, and kept in your browser. Nothing is uploaded.
+- **Exports that explain themselves.** A short summary to paste into an AI chat, a per-second CSV, a CSV of every raw reading, and a JSON file. All of them name their units and include the vehicle, trouble codes and readiness monitors.
+- **Trouble codes.** Read stored and pending codes, see readiness monitors (what an emissions test checks), and clear codes.
+- **Works offline.** After the first visit the app is cached, so it works in a garage or on the road with no signal.
+- **Demo mode.** A simulated truck with a lean-running bank 2, so you can try everything with no hardware.
+
+## What you need
+
+| | Supported |
+|---|---|
+| Browser | Chrome on Android (138 or newer), or Chrome / Edge on Windows, macOS, Linux or ChromeOS |
+| Adapter | ELM327-compatible, Bluetooth Classic or USB |
+| Vehicle | Anything with OBD2: US vehicles from 1996, EU petrol from 2001, EU diesel from 2004 |
+
+Not supported yet: iPhone and iPad (Safari has no way for a web page to reach the adapter), Firefox, WiFi adapters, and Bluetooth LE adapters (planned).
+
+## Using it
+
+1. Plug the adapter into the OBD2 port and turn the ignition on.
+2. Pair the adapter in your device's Bluetooth settings. The PIN is usually `1234` or `0000`.
+3. Open the app, tap **Connect adapter**, and pick the adapter from the list.
+
+Only one app can talk to the adapter at a time, so close any other OBD2 app first.
+
+## Development
+
+```sh
+npm install
+npm run dev      # start a local dev server
+npm test         # run the test suite
+npm run build    # type-check and build to dist/
+```
+
+You don't need a vehicle to work on this. **Try the demo** in the app connects to `src/transport/simulator.ts`, a fake ELM327 that speaks the same text protocol as a real one. The test suite runs against it on both a CAN bus and an older ISO 9141 bus.
+
+### How the code is laid out
+
+```
+src/
+  transport/   Byte pipe to the adapter: Web Serial, and the simulator
+  elm/         ELM327 driver (command queue, init) and response parsing
+  obd/         Signal definitions, units, trouble codes, polling
+  log/         IndexedDB storage, recorder, export formats
+  ui/          React screens
+  store.ts     App state and the connection lifecycle
+```
+
+Each layer only knows about the one below it. To support a new kind of adapter connection, implement `Transport`. To add a sensor, add an entry to `SIGNALS` in `src/obd/signals.ts`.
+
+## Roadmap
+
+- Plain-English descriptions for trouble codes
+- Freeze-frame data (the sensor snapshot saved when a code was set)
+- Manufacturer-specific signals, defined in data files per vehicle (starting with Nissan)
+- Faster sampling by batching several sensors into one request on CAN vehicles
+- Bluetooth LE adapters
+- Comparing sessions side by side
+
+## Contributing
+
+Bug reports are especially useful right now. Please include your vehicle (year, make, model, engine), your adapter, and what the Settings tab shows under **Adapter**.
+
+## License
+
+[MIT](LICENSE)
