@@ -15,6 +15,7 @@ Plug a cheap ELM327 Bluetooth adapter into your vehicle, open the page, and you 
 - **Markers.** Stamp the log as you drive ("A/C on", "holding 2,500 rpm") so the data can be read in context.
 - **Trouble codes.** Read stored, pending and permanent codes, see readiness monitors (what an emissions test checks), and clear codes.
 - **Full diagnostic report.** On every connection the app also reads the freeze frame (what the engine was doing when a fault was recorded), fuel system status, one reading of every sensor the vehicle supports, and the vehicle's own self-test results (OBD service 06). Copy it as one report, or find it saved with the session.
+- **Other modules (airbag, ABS, body...).** An optional, read-only scan asks every computer on the vehicle for its stored codes and lists whatever answers, with the raw codes and status bytes, so you can look them up or paste the report into an AI chat. Nothing is decoded per manufacturer and nothing is ever cleared or changed. It needs an 11-bit CAN vehicle (most from about 2008), takes about a minute, and pauses live logging while it runs. Modules that refuse to talk to a generic adapter are listed as declined.
 - **Works offline.** After the first visit the app is cached, so it works in a garage or on the road with no signal.
 - **Demo mode.** A simulated truck with a lean-running bank 2, so you can try everything with no hardware.
 

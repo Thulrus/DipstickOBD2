@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Elm327 } from './elm/elm327';
 import { parseResponse } from './elm/parse';
-import { toJson, toLongCsv, toSummary, toWideCsv } from './log/export';
+import { toJson, toLongCsv, toReport, toSummary, toWideCsv } from './log/export';
 import type { SampleColumns, Session } from './log/types';
 import { decodeDtc, decodeMonitorStatus, parseDtcs } from './obd/dtc';
+import { parseKwpDtcs, parseUdsDtcs, scanModules, statusFlags } from './obd/modules';
 import { pickNext, Poller, SLOW_INTERVAL_MS, type Sample } from './obd/poller';
 import { SIGNAL_BY_ID, SIGNALS } from './obd/signals';
 import { scanVehicle } from './obd/scan';
@@ -256,5 +257,62 @@ describe('exports', () => {
     expect(text).toContain('- Odometer: 113,204');
     expect(JSON.parse(toJson(session, samples, 'metric')).scan.freezeFrame.triggeredBy).toBe('P0174');
     expect(text).toContain('| Engine speed | rpm | 800 | 900 | 1000 | 800 | 1000 | 3 |');
+  });
+});
+
+describe('other modules', () => {
+  it('parses UDS and KWP2000 code lists, skipping empty slots', () => {
+    expect(parseUdsDtcs([0x59, 0x02, 0xff, 0x80, 0x51, 0x11, 0x2f, 0x00, 0x00, 0x00, 0x00])).toEqual([
+      { code: 'B0051-11', raw: '80 51 11', status: '2F', flags: statusFlags(0x2f) },
+    ]);
+    expect(statusFlags(0x2f)).toEqual(['test failed', 'failed this drive cycle', 'pending', 'confirmed', 'failed since clear']);
+    expect(parseKwpDtcs([0x58, 0x01, 0x40, 0x35, 0x60])).toEqual([{ code: 'C0035', raw: '40 35', status: '60', flags: [] }]);
+  });
+
+  it('reads codes from every module on a CAN vehicle, then restores the adapter', async () => {
+    const transport = new SimulatorTransport({ latencyMs: 1 });
+    await transport.open();
+    const elm = new Elm327(transport);
+    await elm.init();
+    const steps: string[] = [];
+    const scan = await scanModules(elm, (s) => steps.push(s));
+    expect(scan.supported).toBe(true);
+    expect(scan.complete).toBe(true);
+    expect(scan.modules.map((m) => [m.responseId, m.protocol, m.requestId])).toEqual([
+      ['7B8', 'UDS', '7DF'], // answered the broadcast
+      ['7BB', 'KWP2000', '7B3'], // only found by trying its own id, and only speaks the older protocol
+      ['7E8', 'UDS', '7DF'],
+    ]);
+    expect(scan.modules.find((m) => m.responseId === '7B8')!.codes.map((c) => c.code)).toEqual(['B0051-11', 'B1318-1C']);
+    expect(scan.modules.find((m) => m.responseId === '7BB')!.codes.map((c) => c.code)).toEqual(['C0035']);
+    expect(scan.modules.find((m) => m.responseId === '7E8')!.codes.map((c) => c.code)).toEqual(['P0174-00', 'P0171-00']);
+    // The engine computer must be reachable again afterwards.
+    expect((await readTroubleCodes(elm)).stored).toEqual(['P0174']);
+    expect(steps.length).toBeGreaterThan(200);
+
+    const text = toReport({ vin: null, adapter: 'ELM327 v1.5', protocol: '6', protocolName: 'CAN' }, null, null, 'metric', scan);
+    expect(text).toContain('Module answering from 7B8 (UDS, asked at 7DF)');
+    expect(text).toContain('| B0051-11 | 80 51 11 | 2F |');
+  });
+
+  it('stops when asked', async () => {
+    const transport = new SimulatorTransport({ latencyMs: 1 });
+    await transport.open();
+    const elm = new Elm327(transport);
+    await elm.init();
+    const abort = new AbortController();
+    const scan = await scanModules(elm, (s) => s.startsWith('Trying 710') && abort.abort(), abort.signal);
+    expect(scan.complete).toBe(false);
+    expect((await readTroubleCodes(elm)).stored).toEqual(['P0174']);
+  });
+
+  it('declines politely on buses it cannot scan', async () => {
+    const transport = new SimulatorTransport({ protocol: '3', latencyMs: 1 });
+    await transport.open();
+    const elm = new Elm327(transport);
+    await elm.init();
+    const scan = await scanModules(elm);
+    expect(scan.supported).toBe(false);
+    expect(scan.modules).toEqual([]);
   });
 });

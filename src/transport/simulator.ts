@@ -13,6 +13,21 @@ export interface SimulatorOptions {
 
 const SUPPORTED = [0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x13, 0x15, 0x19, 0x1c, 0x1f, 0x21, 0x2e, 0x2f, 0x31, 0x33, 0x42, 0x44];
 const VIN = '1N6AD07W05C400000';
+
+/**
+ * Other computers on the pretend CAN bus. They answer "read stored codes"
+ * (service 19 for UDS, 18 for the older KWP2000) to their own request id, and
+ * the UDS ones also to the broadcast id. The ABS computer is old enough to
+ * only know KWP2000, which is how a real mixed-age vehicle looks.
+ */
+interface SimModule {
+  request: string;
+  response: string;
+  protocol: 'uds' | 'kwp';
+  /** Code bytes plus status byte, per code. */
+  codes: number[][];
+}
+
 /** Service 06 ids the fake engine computer has results for. */
 const MONITOR_IDS = [0x01, 0x21, 0xa2];
 
@@ -59,6 +74,8 @@ export class SimulatorTransport implements Transport {
   private headers = false;
   private spaces = true;
   private searched = false;
+  private header = '7DF';
+  private receiveAddress: string | null = null;
   private stored = ['P0174'];
   private pending = ['P0171'];
   private input = '';
@@ -117,6 +134,8 @@ export class SimulatorTransport implements Transport {
       this.headers = false;
       this.spaces = true;
       this.searched = false;
+      this.header = '7DF';
+      this.receiveAddress = null;
       return '\rELM327 v1.5';
     }
     if (cmd === 'I') return 'ELM327 v1.5';
@@ -126,18 +145,49 @@ export class SimulatorTransport implements Transport {
     if (/^E[01]$/.test(cmd)) this.echo = cmd === 'E1';
     else if (/^H[01]$/.test(cmd)) this.headers = cmd === 'H1';
     else if (/^S[01]$/.test(cmd)) this.spaces = cmd === 'S1';
-    else if (!/^(L[01]|AT[012]|SP[0-9A]{1,2}|ST[0-9A-F]{2}|D|WS)$/.test(cmd)) return '?';
+    else if (/^SH[0-9A-F]{3}$/.test(cmd)) this.header = cmd.slice(2);
+    else if (/^CRA[0-9A-F]{0,3}$/.test(cmd)) this.receiveAddress = cmd.slice(3) || null;
+    else if (!/^(L[01]|AT[012]|SP[0-9A]{1,2}|ST[0-9A-F]{2}|CF[0-9A-F]{3}|CM[0-9A-F]{3}|D|WS)$/.test(cmd)) return '?';
     return 'OK';
   }
 
   /** Formats one or more ECU payloads the way the selected bus would. */
   private respond(service: number, pid: number, firstOnly: boolean): string[] {
+    if (service === 0x19 || service === 0x18) return this.moduleReplies(service, pid);
+    // A header pointed at some other computer means the engine computer stays quiet.
+    if (this.header !== '7DF' && this.header !== '7E0') return [];
     const lines: string[] = [];
     const engine = this.payloads(service, pid);
     for (const payload of engine) lines.push(...this.frame(payload, '7E8', 0x10));
     // A transmission computer that only answers the "what do you support" query.
     if (service === 0x01 && pid === 0x00 && !firstOnly) lines.push(...this.frame([0x41, 0x00, 0x80, 0x00, 0x00, 0x00], '7E9', 0x18));
     return lines;
+  }
+
+  private moduleReplies(service: number, subFunction: number): string[] {
+    if (this.protocol !== '6') return [];
+    const broadcast = this.header === '7DF';
+    const lines: string[] = [];
+    for (const m of this.modules()) {
+      if (broadcast ? m.protocol !== 'uds' : m.request !== this.header) continue;
+      if (this.receiveAddress && this.receiveAddress !== m.response) continue;
+      const bytes = (codes: number[][]) => codes.flat();
+      let payload: number[] | null = null;
+      if (service === 0x19 && m.protocol === 'uds' && subFunction === 0x02) payload = [0x59, 0x02, 0xff, ...bytes(m.codes)];
+      else if (service === 0x18 && m.protocol === 'kwp') payload = [0x58, m.codes.length, ...bytes(m.codes)];
+      else payload = [0x7f, service, service === 0x19 && m.protocol === 'kwp' ? 0x11 : 0x12];
+      lines.push(...this.frame(payload, m.response, 0));
+    }
+    return lines;
+  }
+
+  private modules(): SimModule[] {
+    return [
+      { request: '7E0', response: '7E8', protocol: 'uds', codes: [...this.stored.map((c) => [...encodeDtc(c), 0x00, 0x2f]), ...this.pending.map((c) => [...encodeDtc(c), 0x00, 0x24])] },
+      // Airbag: a sensor fault and a low-voltage record, both with the failure-type byte set.
+      { request: '7B0', response: '7B8', protocol: 'uds', codes: [[...encodeDtc('B0051'), 0x11, 0x2f], [...encodeDtc('B1318'), 0x1c, 0x28]] },
+      { request: '7B3', response: '7BB', protocol: 'kwp', codes: [[...encodeDtc('C0035'), 0x60]] },
+    ];
   }
 
   private frame(payload: number[], canId: string, address: number): string[] {

@@ -42,6 +42,8 @@ export class Poller {
   private slots: Slot[] = [];
   private running = false;
   private loop: Promise<void> | null = null;
+  /** Fixed at the first start, so pausing and resuming doesn't restart the log's clock. */
+  private startedAt: number | null = null;
   onSample: (sample: Sample) => void = () => {};
   onError: (error: Error) => void = () => {};
 
@@ -66,8 +68,8 @@ export class Poller {
   start(): void {
     if (this.running) return;
     this.running = true;
-    const startedAt = this.now();
-    this.loop = this.run(startedAt);
+    this.startedAt ??= this.now();
+    this.loop = this.run(this.startedAt);
   }
 
   async stop(): Promise<void> {

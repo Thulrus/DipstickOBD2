@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
 import { toReport } from '../log/export';
 import { dtcArea } from '../obd/dtc';
+import type { ModuleScan } from '../obd/modules';
 import { SIGNALS } from '../obd/signals';
 import { displayUnit, formatValue } from '../obd/units';
-import { clearCodes, refreshCodes, useApp } from '../store';
+import { clearCodes, refreshCodes, scanAllModules, stopModuleScan, useApp } from '../store';
 import { download } from './download';
 import { ConnectPanel } from './ConnectPanel';
 
@@ -13,6 +14,8 @@ export function Codes() {
   const busy = useApp((s) => s.codesBusy);
   const scan = useApp((s) => s.scan);
   const scanStep = useApp((s) => s.scanStep);
+  const modules = useApp((s) => s.modules);
+  const modulesStep = useApp((s) => s.modulesStep);
   const units = useApp((s) => s.units);
   const adapter = useApp((s) => s.adapter);
   const vin = useApp((s) => s.vin);
@@ -34,12 +37,12 @@ export function Codes() {
   const frameRows = frame ? SIGNALS.filter((s) => frame.values[s.id] !== undefined) : [];
   const tests = scan?.monitorTests ?? [];
   const failed = tests.filter((t) => !t.passed);
-  const working = busy || scanStep !== '';
+  const working = busy || scanStep !== '' || modulesStep !== '';
 
   function report(): string {
     const vehicle = { vin, adapter: adapter?.version ?? '', protocol: adapter?.protocol ?? '', protocolName: adapter?.protocolName ?? '' };
     const head = `# OBD2 diagnostic report\n\n${demo ? '**Demo data from a simulated vehicle, not a real one.**\n\n' : ''}`;
-    return head + toReport(vehicle, codes, scan, units);
+    return head + toReport(vehicle, codes, scan, units, modules);
   }
 
   async function copyReport() {
@@ -92,6 +95,28 @@ export function Codes() {
           codes={codes?.permanent ?? []}
         />
       )}
+
+      <section className="card">
+        <h2>Other modules</h2>
+        <p className="note">
+          Airbag, ABS, body, transmission and any other computer that will answer. This reads their stored codes exactly as they are sent,
+          without decoding them: copy the report into an AI assistant or search the codes yourself. It only reads, and never clears or
+          changes anything. It takes about a minute, and live logging pauses while it runs.
+        </p>
+        {modulesStep ? (
+          <div className="row">
+            <button onClick={stopModuleScan}>Stop</button>
+            <span className="note" role="status">
+              {modulesStep}
+            </span>
+          </div>
+        ) : (
+          <button disabled={working} onClick={() => void scanAllModules()}>
+            {modules ? 'Scan again' : 'Scan all modules'}
+          </button>
+        )}
+        {modules && <ModuleResults scan={modules} />}
+      </section>
 
       {frame && (
         <section className="card">
@@ -236,5 +261,46 @@ function CodeList({ title, hint, codes }: { title: string; hint: string; codes: 
         </ul>
       )}
     </section>
+  );
+}
+
+function ModuleResults({ scan }: { scan: ModuleScan }) {
+  if (!scan.supported) return <p className="empty">{scan.note}</p>;
+  return (
+    <>
+      <p className="note">
+        {scan.modules.length === 0
+          ? 'No modules answered.'
+          : `${scan.modules.length} module${scan.modules.length === 1 ? '' : 's'} answered`}
+        {scan.complete ? '' : ' (scan stopped early)'}. {scan.note}
+      </p>
+      {scan.modules.map((m) => (
+        <div key={m.responseId}>
+          <h3>
+            Module {m.responseId} <span className="unit">{m.protocol}</span>
+          </h3>
+          {m.note ? (
+            <p className="empty">{m.note}</p>
+          ) : m.codes.length === 0 ? (
+            <p className="empty">No codes stored</p>
+          ) : (
+            <ul className="codes">
+              {m.codes.map((c) => (
+                <li key={c.raw}>
+                  <b>{c.code}</b>
+                  <span>
+                    raw {c.raw}, status {c.status}
+                    {c.flags.length > 0 && ` (${c.flags.join(', ')})`}
+                  </span>
+                  <a href={`https://www.google.com/search?q=${encodeURIComponent(c.code.split('-')[0] + ' code')}`} target="_blank" rel="noreferrer">
+                    Look up
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </>
   );
 }
