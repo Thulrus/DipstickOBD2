@@ -597,3 +597,24 @@ th:first-child {
   flex-direction: column;
   gap: 4px;
 }
+
+td.ok {
+  color: var(--good);
+}
+
+td.fail {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+table .unit {
+  white-space: normal;
+}

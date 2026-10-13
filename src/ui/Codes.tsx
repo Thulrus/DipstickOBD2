@@ -1,13 +1,24 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
+import { toReport } from '../log/export';
 import { dtcArea } from '../obd/dtc';
+import { SIGNALS } from '../obd/signals';
+import { displayUnit, formatValue } from '../obd/units';
 import { clearCodes, refreshCodes, useApp } from '../store';
+import { download } from './download';
 import { ConnectPanel } from './ConnectPanel';
 
 export function Codes() {
   const status = useApp((s) => s.status);
   const codes = useApp((s) => s.codes);
   const busy = useApp((s) => s.codesBusy);
+  const scan = useApp((s) => s.scan);
+  const scanStep = useApp((s) => s.scanStep);
+  const units = useApp((s) => s.units);
+  const adapter = useApp((s) => s.adapter);
+  const vin = useApp((s) => s.vin);
+  const demo = useApp((s) => s.demo);
   const confirm = useRef<HTMLDialogElement>(null);
+  const [copied, setCopied] = useState(false);
 
   if (status !== 'connected') {
     return (
@@ -19,6 +30,30 @@ export function Codes() {
 
   const monitors = codes?.status?.monitors ?? [];
   const incomplete = monitors.filter((m) => !m.complete);
+  const frame = scan?.freezeFrame;
+  const frameRows = frame ? SIGNALS.filter((s) => frame.values[s.id] !== undefined) : [];
+  const tests = scan?.monitorTests ?? [];
+  const failed = tests.filter((t) => !t.passed);
+  const working = busy || scanStep !== '';
+
+  function report(): string {
+    const vehicle = { vin, adapter: adapter?.version ?? '', protocol: adapter?.protocol ?? '', protocolName: adapter?.protocolName ?? '' };
+    const head = `# OBD2 diagnostic report\n\n${demo ? '**Demo data from a simulated vehicle, not a real one.**\n\n' : ''}`;
+    return head + toReport(vehicle, codes, scan, units);
+  }
+
+  async function copyReport() {
+    await navigator.clipboard.writeText(report());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function downloadReport() {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+    download(`dipstick_${stamp}_report.md`, report(), 'text/markdown');
+  }
 
   return (
     <>
@@ -28,13 +63,69 @@ export function Codes() {
           <br />
           {codes ? `Read at ${new Date(codes.readAt).toLocaleTimeString()}` : 'Not read yet'}
         </p>
-        <button disabled={busy} onClick={() => void refreshCodes()}>
-          {busy ? 'Reading…' : 'Read again'}
+        <button disabled={working} onClick={() => void refreshCodes()}>
+          {working ? 'Reading…' : 'Read again'}
         </button>
       </div>
 
+      <section className="card">
+        <h2>Export</h2>
+        <p className="note" role="status">
+          {scanStep
+            ? `${scanStep}… You can export now, but the report will be more complete in a moment.`
+            : 'Everything on this page as one report, ready to paste into a chat with an AI assistant. It is also saved with this session in History.'}
+        </p>
+        <div className="row">
+          <button className="primary" onClick={() => void copyReport()}>
+            {copied ? 'Copied ✓' : 'Copy report for AI'}
+          </button>
+          <button onClick={downloadReport}>Report file</button>
+        </div>
+      </section>
+
       <CodeList title="Stored codes" hint="Confirmed faults. These turn the check-engine light on." codes={codes?.stored ?? []} />
       <CodeList title="Pending codes" hint="Seen recently but not confirmed yet. Often an early warning." codes={codes?.pending ?? []} />
+      {(codes?.permanent?.length ?? 0) > 0 && (
+        <CodeList
+          title="Permanent codes"
+          hint="These can't be cleared with a scanner. The vehicle removes them itself once it has confirmed the fault is gone."
+          codes={codes?.permanent ?? []}
+        />
+      )}
+
+      {frame && (
+        <section className="card">
+          <h2>Freeze frame</h2>
+          <p className="note">What the engine was doing at the moment {frame.dtc} was recorded.</p>
+          <div className="scroll">
+            <table>
+              <tbody>
+                {frameRows.map((s) => (
+                  <tr key={s.id}>
+                    <th>{s.name}</th>
+                    <td>
+                      {formatValue(s, frame.values[s.id]!, units)} <span className="unit">{displayUnit(s, units)}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {scan && scan.fuelSystem.length > 0 && (
+        <section className="card">
+          <h2>Fuel system</h2>
+          <ul className="monitors">
+            {scan.fuelSystem.map((state, i) => (
+              <li key={i}>
+                <span>{state}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {monitors.length > 0 && (
         <section className="card">
@@ -52,6 +143,45 @@ export function Codes() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {tests.length > 0 && (
+        <section className="card">
+          <h2>Self-test results</h2>
+          <p className="note">
+            The vehicle's own component tests, with the limits it checks against.{' '}
+            {failed.length === 0 ? `All ${tests.length} are within limits.` : `${failed.length} of ${tests.length} are outside limits.`} Values
+            are raw numbers from the engine computer.
+          </p>
+          <details open={failed.length > 0}>
+            <summary>Show {tests.length} results</summary>
+            <div className="scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Test</th>
+                    <th>Value</th>
+                    <th>Limits</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...failed, ...tests.filter((t) => t.passed)].map((t, i) => (
+                    <tr key={i}>
+                      <th>
+                        {t.monitor}
+                        <span className="unit"> {t.test}</span>
+                      </th>
+                      <td>{t.value}</td>
+                      <td>{t.min !== null && t.max !== null ? `${t.min} to ${t.max}` : t.min !== null ? `≥ ${t.min}` : `≤ ${t.max}`}</td>
+                      <td className={t.passed ? 'ok' : 'fail'}>{t.passed ? '✓ Pass' : '✕ Fail'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
         </section>
       )}
 

@@ -5,6 +5,7 @@ import { toSeries, type SampleColumns, type Session } from '../log/types';
 import { SIGNAL_BY_ID } from '../obd/signals';
 import { useApp } from '../store';
 import { SeriesChart } from './Chart';
+import { download } from './download';
 
 export function History() {
   const status = useApp((s) => s.status);
@@ -41,15 +42,6 @@ export function History() {
       ))}
     </ul>
   );
-}
-
-function download(name: string, text: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function SessionDetail({ session, onBack }: { session: Session; onBack: () => void }) {
@@ -128,10 +120,17 @@ function SessionDetail({ session, onBack }: { session: Session; onBack: () => vo
 
       <section className="card">
         <h2>Export</h2>
-        <p className="note">The summary is short enough to paste into a chat with an AI assistant. Attach the CSV when it needs the detail.</p>
+        <p className="note">
+          The summary has the vehicle, trouble codes, freeze frame, self-test results and statistics for the logged signals, and is short
+          enough to paste into a chat with an AI assistant. Attach a CSV when it needs the readings over time. The JSON file has
+          everything in one place.
+        </p>
         <div className="row">
           <button className="primary" disabled={!samples} onClick={() => void copySummary()}>
             {copied ? 'Copied ✓' : 'Copy summary for AI'}
+          </button>
+          <button disabled={!samples} onClick={() => samples && download(exportFileName(session, 'summary', 'md'), toSummary(current, samples, units), 'text/markdown')}>
+            Summary file
           </button>
           <button disabled={!samples} onClick={() => samples && download(exportFileName(session, 'per-second', 'csv'), toWideCsv(current, samples, units), 'text/csv')}>
             CSV (per second)

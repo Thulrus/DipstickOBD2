@@ -59,6 +59,11 @@ export interface TroubleCodes {
   stored: string[];
   /** Faults seen this or last drive cycle that haven't been confirmed yet. */
   pending: string[];
+  /**
+   * Codes that stay until the vehicle itself confirms the fault is gone;
+   * clearing can't remove them. Newer (roughly 2010+) vehicles only.
+   */
+  permanent?: string[];
   status: MonitorStatus | null;
   readAt: number;
 }
@@ -67,7 +72,8 @@ export async function readTroubleCodes(elm: Elm327): Promise<TroubleCodes> {
   const status = await readMonitorStatus(elm);
   const stored = parseDtcs(await elm.obd('03'), 0x03, elm.bus);
   const pending = parseDtcs(await elm.obd('07'), 0x07, elm.bus);
-  return { stored, pending, status, readAt: Date.now() };
+  const permanent = await elm.obd('0A').then((m) => parseDtcs(m, 0x0a, elm.bus)).catch(() => []);
+  return { stored, pending, permanent, status, readAt: Date.now() };
 }
 
 /**

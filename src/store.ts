@@ -6,6 +6,7 @@ import type { Session } from './log/types';
 import { Poller, type Sample } from './obd/poller';
 import { ADAPTER_VOLTAGE_PID, DEFAULT_SIGNAL_IDS, SIGNALS, type Signal } from './obd/signals';
 import { defaultUnitSystem, type UnitSystem } from './obd/units';
+import { scanVehicle, type VehicleScan } from './obd/scan';
 import { clearTroubleCodes, readSupportedPids, readTroubleCodes, readVin, type TroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
 import type { Transport } from './transport/types';
@@ -51,6 +52,10 @@ interface State {
   samplesPerSecond: number;
   codes: TroubleCodes | null;
   codesBusy: boolean;
+  /** Freeze frame, self-tests and full snapshot; read in the background. */
+  scan: VehicleScan | null;
+  /** What the background scan is reading, or '' when it isn't running. */
+  scanStep: string;
   sessionId: string | null;
 }
 
@@ -90,6 +95,8 @@ export const useApp = create<State>(() => ({
   samplesPerSecond: 0,
   codes: null,
   codesBusy: false,
+  scan: null,
+  scanStep: '',
   sessionId: null,
 }));
 
@@ -104,6 +111,7 @@ let recorder: Recorder | null = null;
 let wakeLock: WakeLockSentinel | null = null;
 let uiTimer: ReturnType<typeof setInterval> | null = null;
 let pendingLive: Record<string, LiveValue> = {};
+let supportedPids: ReadonlySet<number> = new Set();
 let sampleCounter = 0;
 
 function describe(error: unknown): string {
@@ -230,7 +238,8 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     await recorder.start();
     void requestPersistence();
 
-    set({ status: 'connected', step: '', adapter, vin, available, codes, live: {}, sessionId: session.id });
+    supportedPids = pids;
+    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, live: {}, sessionId: session.id });
     poller = new Poller(driver);
     poller.onSample = onSample;
     poller.onError = (e) => void cleanup(describe(e));
@@ -238,6 +247,7 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     poller.start();
     startUiUpdates();
     void holdWakeLock();
+    void runScan();
   } catch (e) {
     if (opened) {
       opened.onClose = null;
@@ -255,7 +265,7 @@ async function cleanup(error: string | null): Promise<void> {
   if (uiTimer) clearInterval(uiTimer);
   uiTimer = null;
   pendingLive = {};
-  set({ status: 'idle', step: '', error, samplesPerSecond: 0, sessionId: null });
+  set({ status: 'idle', step: '', error, samplesPerSecond: 0, sessionId: null, scanStep: '' });
   dropWakeLock();
   // Poller first, so it can't write to a transport that is closing under it.
   if (p) await Promise.race([p.stop(), new Promise((res) => setTimeout(res, 1500))]);
@@ -301,6 +311,24 @@ export function toggleSignal(id: string): void {
   poller?.setSignals(pollable());
 }
 
+/**
+ * Reads the slow, one-off diagnostic data. It shares the adapter with live
+ * polling, so it runs in the background rather than holding up the dashboard.
+ */
+async function runScan(): Promise<void> {
+  const driver = elm;
+  if (!driver || get().scanStep) return;
+  set({ scanStep: 'Starting' });
+  try {
+    const scan = await scanVehicle(driver, supportedPids, (scanStep) => elm === driver && set({ scanStep }));
+    if (elm !== driver) return; // disconnected (or reconnected) meanwhile
+    recorder?.update({ scan });
+    set({ scan });
+  } finally {
+    if (elm === driver || !elm) set({ scanStep: '' });
+  }
+}
+
 export async function refreshCodes(): Promise<void> {
   if (!elm || get().codesBusy) return;
   set({ codesBusy: true });
@@ -313,6 +341,7 @@ export async function refreshCodes(): Promise<void> {
   } finally {
     set({ codesBusy: false });
   }
+  await runScan();
 }
 
 export async function clearCodes(): Promise<void> {

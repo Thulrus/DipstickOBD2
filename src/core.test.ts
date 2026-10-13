@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Elm327 } from './elm/elm327';
 import { parseResponse } from './elm/parse';
-import { toLongCsv, toSummary, toWideCsv } from './log/export';
+import { toJson, toLongCsv, toSummary, toWideCsv } from './log/export';
 import type { SampleColumns, Session } from './log/types';
 import { decodeDtc, decodeMonitorStatus, parseDtcs } from './obd/dtc';
 import { pickNext, Poller, SLOW_INTERVAL_MS, type Sample } from './obd/poller';
 import { SIGNAL_BY_ID, SIGNALS } from './obd/signals';
+import { scanVehicle } from './obd/scan';
 import { readSupportedPids, readTroubleCodes, readVin, clearTroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
 
@@ -108,11 +109,44 @@ describe.each(['6', '3'] as const)('against the simulator (protocol %s)', (proto
     const codes = await readTroubleCodes(elm);
     expect(codes.stored).toEqual(['P0174']);
     expect(codes.pending).toEqual(['P0171']);
+    expect(codes.permanent).toEqual([]);
     expect(codes.status?.mil).toBe(true);
     await clearTroubleCodes(elm);
     const after = await readTroubleCodes(elm);
     expect(after.stored).toEqual([]);
     expect(after.status?.mil).toBe(false);
+  });
+
+  it('scans freeze frame, fuel status, a full snapshot and self-tests', async () => {
+    const { elm } = await connect();
+    const steps: string[] = [];
+    const scan = await scanVehicle(elm, await readSupportedPids(elm), (s) => steps.push(s));
+    expect(steps).toHaveLength(4);
+    expect(scan.freezeFrame?.dtc).toBe('P0174');
+    expect(scan.freezeFrame?.values.rpm).toBeGreaterThan(600);
+    expect(scan.freezeFrame?.values.ltft_b2).toBeGreaterThan(10);
+    expect(scan.fuelSystem).toEqual(['Closed loop: using oxygen sensor feedback']);
+    expect(scan.obdStandard).toBe('OBD-II (California ARB)');
+    expect(Object.keys(scan.snapshot)).toContain('fuel_level');
+    expect(scan.snapshot.coolant_temp).toBeGreaterThan(60);
+    if (protocol === '6') {
+      expect(scan.monitorTests).toHaveLength(5);
+      const failed = scan.monitorTests.filter((t) => !t.passed);
+      expect(failed).toEqual([
+        { monitor: 'Misfire, cylinder 1', test: 'Misfire count, this or last drive cycle', value: 65, min: 0, max: 32, unitId: '24', passed: false },
+      ]);
+    } else {
+      expect(scan.monitorTests).toEqual([
+        { monitor: 'Test $01', test: 'Component $01', value: 82, min: 48, max: null, unitId: null, passed: true },
+        { monitor: 'Test $02', test: 'Component $01', value: 400, min: null, max: 256, unitId: null, passed: false },
+      ]);
+    }
+  });
+
+  it('has no freeze frame once codes are cleared', async () => {
+    const { elm } = await connect();
+    await clearTroubleCodes(elm);
+    expect((await scanVehicle(elm, await readSupportedPids(elm))).freezeFrame).toBeNull();
   });
 
   it('polls signals, including ones the vehicle lacks', async () => {
@@ -150,6 +184,14 @@ describe('exports', () => {
     signalIds: ['rpm', 'coolant_temp'],
     sampleCount: 4,
     codes: { stored: ['P0174'], pending: [], status: { mil: true, dtcCount: 1, monitors: [{ name: 'Catalyst', complete: false }] }, readAt: 0 },
+    scan: {
+      readAt: 0,
+      freezeFrame: { dtc: 'P0174', values: { rpm: 2000, coolant_temp: 90 } },
+      fuelSystem: ['Closed loop: using oxygen sensor feedback'],
+      obdStandard: 'OBD-II (California ARB)',
+      snapshot: { fuel_level: 50 },
+      monitorTests: [{ monitor: 'Catalyst bank 1', test: 'Test $80', value: 72, min: 0, max: 96, unitId: '20', passed: true }],
+    },
     note: '',
   };
   const samples: SampleColumns = { t: [100, 300, 600, 1500], k: [0, 1, 0, 0], v: [800, 90, 900, 1000] };
@@ -171,9 +213,14 @@ describe('exports', () => {
 
   it('writes a summary with codes and statistics', () => {
     const text = toSummary(session, samples, 'metric');
-    expect(text).toContain('Stored codes: P0174');
+    expect(text).toContain('Stored (confirmed) codes: P0174');
     expect(text).toContain('Check-engine light: ON');
-    expect(text).toContain('not yet complete: Catalyst');
+    expect(text).toContain('| Catalyst | Not complete |');
+    expect(text).toContain('when P0174 was recorded');
+    expect(text).toContain('| Coolant temperature | 90 | °C |');
+    expect(text).toContain('| Fuel level | 50 | % |');
+    expect(text).toContain('| Catalyst bank 1 | Test $80 | 72 | 0 | 96 | 20 | Pass |');
+    expect(JSON.parse(toJson(session, samples, 'metric')).scan.freezeFrame.triggeredBy).toBe('P0174');
     expect(text).toContain('| Engine speed | rpm | 800 | 900 | 1000 | 800 | 1000 | 3 |');
   });
 });

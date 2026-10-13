@@ -9,8 +9,24 @@ export interface SimulatorOptions {
   clock?: () => number;
 }
 
-const SUPPORTED = [0x01, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x13, 0x15, 0x19, 0x1c, 0x1f, 0x21, 0x2e, 0x2f, 0x31, 0x33, 0x42, 0x44];
+const SUPPORTED = [0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x13, 0x15, 0x19, 0x1c, 0x1f, 0x21, 0x2e, 0x2f, 0x31, 0x33, 0x42, 0x44];
 const VIN = '1N6AD07W05C400000';
+/** Service 06 ids the fake engine computer has results for. */
+const MONITOR_IDS = [0x01, 0x21, 0xa2];
+
+/** Builds a "supported ids" reply: 32 bits for base+1..base+32, last bit = more follow. */
+function supportMask(ids: number[], base: number): number[] {
+  const mask = [0, 0, 0, 0];
+  for (const id of ids) {
+    const i = id - base - 1;
+    if (i >= 0 && i < 31) mask[i >> 3]! |= 0x80 >> (i & 7);
+  }
+  if (ids.some((id) => id > base + 0x20)) mask[3]! |= 1;
+  return mask;
+}
+
+/** Simulated seconds into the drive at which the stored code "happened". */
+const FROZEN_AT = 400;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const u8 = (v: number) => clamp(Math.round(v), 0, 255);
@@ -144,6 +160,17 @@ export class SimulatorTransport implements Transport {
         const data = this.pid(pid);
         return data ? [[0x41, pid, ...data]] : [];
       }
+      case 0x02: {
+        // Freeze frame: the engine as it was when the stored code was set.
+        if (pid === 0x02) return [[0x42, 0x02, 0x00, ...(this.stored[0] ? encodeDtc(this.stored[0]) : [0, 0])]];
+        if (!this.stored.length) return [];
+        const data = this.pid(pid, FROZEN_AT);
+        return data ? [[0x42, pid, 0x00, ...data]] : [];
+      }
+      case 0x06:
+        return this.monitors(pid, can);
+      case 0x0a:
+        return can ? [[0x4a, 0x00]] : [];
       case 0x03:
       case 0x07: {
         const codes = (service === 0x03 ? this.stored : this.pending).flatMap(encodeDtc);
@@ -169,9 +196,31 @@ export class SimulatorTransport implements Transport {
     }
   }
 
+  private monitors(id: number, can: boolean): number[][] {
+    if (id % 0x20 === 0) {
+      return id > 0xa0 ? [] : [[0x46, id, ...supportMask(can ? MONITOR_IDS : [0x01, 0x02], id)]];
+    }
+    if (!can) {
+      // Pre-CAN format: test id, component (top bit: limit is a minimum), value, limit.
+      if (id === 0x01) return [[0x46, 0x01, 0x81, 0x00, 0x52, 0x00, 0x30]];
+      if (id === 0x02) return [[0x46, 0x02, 0x01, 0x01, 0x90, 0x01, 0x00]];
+      return [];
+    }
+    switch (id) {
+      case 0x01: // two oxygen sensor tests, both in range
+        return [[0x46, 0x01, 0x80, 0x0a, 0x0b, 0xb0, 0x04, 0x00, 0xff, 0xff, 0x01, 0x81, 0x0a, 0x02, 0x10, 0x00, 0x00, 0x08, 0x00]];
+      case 0x21: // catalyst, in range
+        return [[0x46, 0x21, 0x80, 0x20, 0x00, 0x48, 0x00, 0x00, 0x00, 0x60]];
+      case 0xa2: // cylinder 1 misfire counters; the recent one is over its limit
+        return [[0x46, 0xa2, 0x0b, 0x24, 0x00, 0x03, 0x00, 0x00, 0xff, 0xff, 0xa2, 0x0c, 0x24, 0x00, 0x41, 0x00, 0x00, 0x00, 0x20]];
+      default:
+        return [];
+    }
+  }
+
   /** The made-up engine: a looping drive with stops, warming up from cold. */
-  private engine() {
-    const t = this.clock();
+  private engine(at?: number) {
+    const t = at ?? this.clock();
     const wobble = (period: number, phase = 0) => Math.sin((t / period) * 2 * Math.PI + phase);
     const speed = Math.max(0, 48 + 42 * wobble(95) + 14 * wobble(23, 1)); // km/h
     const accel = 42 * wobble(95, Math.PI / 2) + 14 * wobble(23, 1 + Math.PI / 2);
@@ -201,24 +250,17 @@ export class SimulatorTransport implements Transport {
     };
   }
 
-  private pid(pid: number): number[] | null {
-    if (pid % 0x20 === 0) {
-      const mask = [0, 0, 0, 0];
-      for (const p of SUPPORTED) {
-        const i = p - pid - 1;
-        if (i >= 0 && i < 32) mask[i >> 3]! |= 0x80 >> (i & 7);
-      }
-      if (SUPPORTED.some((p) => p > pid + 0x20)) mask[3]! |= 1;
-      return pid <= 0x40 ? mask : null;
-    }
+  private pid(pid: number, at?: number): number[] | null {
+    if (pid % 0x20 === 0) return pid <= 0x40 ? supportMask(SUPPORTED, pid) : null;
     if (!SUPPORTED.includes(pid)) return null;
-    const e = this.engine();
+    const e = this.engine(at);
     const trim = (v: number) => u8((v * 128) / 100 + 128);
     switch (pid) {
       case 0x01:
         // MIL + count, then: misfire/fuel/components all complete; catalyst,
         // EVAP, O2 sensor, O2 heater supported with EVAP still incomplete.
         return [(this.stored.length ? 0x80 : 0) | this.stored.length, 0x07, 0x65, 0x04];
+      case 0x03: return [e.coolant > 40 ? 0x02 : 0x01, 0x00];
       case 0x04: return [u8(e.load * 2.55)];
       case 0x05: return [u8(e.coolant + 40)];
       case 0x06: return [trim(e.stft1)];

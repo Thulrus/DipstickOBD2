@@ -11,7 +11,8 @@ Plug a cheap ELM327 Bluetooth adapter into your vehicle, open the page, and you 
 - **Live data.** Every standard sensor your vehicle reports: RPM, speed, temperatures, fuel trims, oxygen sensors, airflow, timing and more. You choose which ones to watch.
 - **Automatic logging.** Each connection is recorded as a session, saved every few seconds, and kept in your browser. Nothing is uploaded.
 - **Exports that explain themselves.** A short summary to paste into an AI chat, a per-second CSV, a CSV of every raw reading, and a JSON file. All of them name their units and include the vehicle, trouble codes and readiness monitors.
-- **Trouble codes.** Read stored and pending codes, see readiness monitors (what an emissions test checks), and clear codes.
+- **Trouble codes.** Read stored, pending and permanent codes, see readiness monitors (what an emissions test checks), and clear codes.
+- **Full diagnostic report.** On every connection the app also reads the freeze frame (what the engine was doing when a fault was recorded), fuel system status, one reading of every sensor the vehicle supports, and the vehicle's own self-test results (OBD service 06). Copy it as one report, or find it saved with the session.
 - **Works offline.** After the first visit the app is cached, so it works in a garage or on the road with no signal.
 - **Demo mode.** A simulated truck with a lean-running bank 2, so you can try everything with no hardware.
 
@@ -63,7 +64,7 @@ Each layer only knows about the one below it. To support a new kind of adapter c
 ## Roadmap
 
 - Plain-English descriptions for trouble codes
-- Freeze-frame data (the sensor snapshot saved when a code was set)
+- Scaled units for self-test results (they are raw numbers today)
 - Manufacturer-specific signals, defined in data files per vehicle (starting with Nissan)
 - Faster sampling by batching several sensors into one request on CAN vehicles
 - Bluetooth LE adapters

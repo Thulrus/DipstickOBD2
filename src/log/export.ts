@@ -1,6 +1,8 @@
-import { SIGNAL_BY_ID, type Signal } from '../obd/signals';
-import { displayUnit, toDisplay, type UnitSystem } from '../obd/units';
-import { toSeries, type SampleColumns, type Series, type Session } from './types';
+import type { VehicleScan } from '../obd/scan';
+import { SIGNAL_BY_ID, SIGNALS, type Signal } from '../obd/signals';
+import { displayUnit, formatValue, toDisplay, type UnitSystem } from '../obd/units';
+import type { TroubleCodes } from '../obd/vehicle';
+import { toSeries, type SampleColumns, type Series, type Session, type VehicleInfo } from './types';
 
 /**
  * Export formats. The goal is data an AI assistant (or a spreadsheet, or a
@@ -111,7 +113,7 @@ export function computeStats(session: Session, samples: SampleColumns, units: Un
   });
 }
 
-function sessionHeader(session: Session) {
+function sessionHeader(session: Session, units: UnitSystem) {
   return {
     app: 'Dipstick OBD2',
     recorded: new Date(session.startedAt).toISOString(),
@@ -123,9 +125,97 @@ function sessionHeader(session: Session) {
       checkEngineLight: session.codes.status?.mil ?? null,
       stored: session.codes.stored,
       pending: session.codes.pending,
+      permanent: session.codes.permanent ?? [],
       readinessMonitors: session.codes.status?.monitors ?? [],
     },
+    scan: session.scan ? scanForJson(session.scan, units) : null,
   };
+}
+
+/** Signal values (metric, keyed by id) as labelled rows in the chosen units. */
+function valueRows(values: Record<string, number>, units: UnitSystem): { signal: Signal; text: string; unit: string }[] {
+  return SIGNALS.filter((s) => values[s.id] !== undefined).map((signal) => ({
+    signal,
+    text: formatValue(signal, values[signal.id]!, units),
+    unit: displayUnit(signal, units),
+  }));
+}
+
+function scanForJson(scan: VehicleScan, units: UnitSystem) {
+  const values = (v: Record<string, number>) =>
+    valueRows(v, units).map((r) => ({ id: r.signal.id, name: r.signal.name, value: Number(r.text), unit: r.unit }));
+  return {
+    read: new Date(scan.readAt).toISOString(),
+    obdStandard: scan.obdStandard,
+    fuelSystemStatus: scan.fuelSystem,
+    freezeFrame: scan.freezeFrame && { triggeredBy: scan.freezeFrame.dtc, values: values(scan.freezeFrame.values) },
+    currentValues: values(scan.snapshot),
+    // Raw numbers from the vehicle; unitId is the SAE J1979 unit-and-scaling id.
+    selfTestResults: scan.monitorTests,
+  };
+}
+
+/**
+ * The diagnostic picture as Markdown: codes, readiness, freeze frame, a
+ * reading of every supported sensor and the vehicle's self-test results.
+ * Sections with nothing to report are left out.
+ */
+export function toReport(vehicle: VehicleInfo, codes: TroubleCodes | null, scan: VehicleScan | null | undefined, units: UnitSystem): string {
+  const out: string[] = [];
+  const table = (head: string[], rows: string[][]) => {
+    out.push(`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`), '');
+  };
+
+  out.push('## Vehicle', '', `- VIN: ${vehicle.vin ?? 'not reported'}`, `- Protocol: ${vehicle.protocolName}`, `- Adapter: ${vehicle.adapter}`);
+  if (scan?.obdStandard) out.push(`- OBD standard: ${scan.obdStandard}`);
+  out.push('', '## Trouble codes', '');
+  if (!codes) {
+    out.push('Not read.', '');
+  } else {
+    const mil = codes.status?.mil;
+    out.push(
+      `- Read: ${new Date(codes.readAt).toLocaleString()}`,
+      `- Check-engine light: ${mil === undefined ? 'unknown' : mil ? 'ON' : 'off'}`,
+      `- Stored (confirmed) codes: ${codes.stored.join(', ') || 'none'}`,
+      `- Pending (not yet confirmed) codes: ${codes.pending.join(', ') || 'none'}`,
+      `- Permanent codes: ${codes.permanent?.join(', ') || 'none'}`,
+      '',
+    );
+    const monitors = codes.status?.monitors ?? [];
+    if (monitors.length) {
+      out.push('## Readiness monitors', '');
+      table(['Monitor', 'Status'], monitors.map((m) => [m.name, m.complete ? 'Complete' : 'Not complete']));
+    }
+  }
+  if (!scan) return out.join('\n');
+
+  if (scan.fuelSystem.length) {
+    out.push('## Fuel system status', '', ...scan.fuelSystem.map((s, i) => `- System ${i + 1}: ${s}`), '');
+  }
+  if (scan.freezeFrame) {
+    out.push('## Freeze frame', '', `Sensor values saved by the engine computer when ${scan.freezeFrame.dtc} was recorded.`, '');
+    table(['Signal', 'Value', 'Unit'], valueRows(scan.freezeFrame.values, units).map((r) => [r.signal.name, r.text, r.unit]));
+  }
+  const now = valueRows(scan.snapshot, units);
+  if (now.length) {
+    out.push('## Current values', '', `One reading of every sensor the vehicle supports, taken ${new Date(scan.readAt).toLocaleString()}.`, '');
+    table(['Signal', 'Value', 'Unit'], now.map((r) => [r.signal.name, r.text, r.unit]));
+  }
+  if (scan.monitorTests.length) {
+    const failed = scan.monitorTests.filter((t) => !t.passed).length;
+    out.push(
+      '## Self-test results (OBD service 06)',
+      '',
+      `The vehicle's own component tests: ${failed} of ${scan.monitorTests.length} outside limits. Numbers are raw and unscaled; "Unit id" is the SAE J1979 unit-and-scaling id.`,
+      '',
+    );
+    const n = (v: number | null) => (v === null ? '' : String(v));
+    table(
+      ['Monitor', 'Test', 'Value', 'Min', 'Max', 'Unit id', 'Result'],
+      scan.monitorTests.map((t) => [t.monitor, t.test, String(t.value), n(t.min), n(t.max), t.unitId ?? '', t.passed ? 'Pass' : 'FAIL']),
+    );
+  }
+  return out.join('\n');
 }
 
 /** Everything in one self-describing file. */
@@ -137,7 +227,7 @@ export function toJson(session: Session, samples: SampleColumns, units: UnitSyst
     // [seconds since start, value] pairs
     samples: series.t.map((t, i) => [t / 1000, Number(toDisplay(signal, series.v[i]!, units).toFixed(precision(signal)))]),
   }));
-  return JSON.stringify({ ...sessionHeader(session), signals }, null, 1);
+  return JSON.stringify({ ...sessionHeader(session, units), signals }, null, 1);
 }
 
 /**
@@ -145,30 +235,13 @@ export function toJson(session: Session, samples: SampleColumns, units: UnitSyst
  * assistant: vehicle, codes, and per-signal statistics instead of raw rows.
  */
 export function toSummary(session: Session, samples: SampleColumns, units: UnitSystem): string {
-  const h = sessionHeader(session);
   const out: string[] = ['# OBD2 session summary', ''];
   if (session.demo) out.push('**Demo data from a simulated vehicle, not a real one.**', '');
-  out.push(
-    `- Recorded: ${sessionTitle(session)} (${formatDuration(session.endedAt - session.startedAt)})`,
-    `- VIN: ${session.vehicle.vin ?? 'not reported'}`,
-    `- Protocol: ${session.vehicle.protocolName}`,
-    `- Adapter: ${session.vehicle.adapter}`,
-  );
+  out.push(`- Recorded: ${sessionTitle(session)} (${formatDuration(session.endedAt - session.startedAt)})`);
   if (session.note) out.push(`- Note: ${session.note}`);
-  out.push('', '## Trouble codes', '');
-  if (!h.troubleCodes) {
-    out.push('Not read during this session.');
-  } else {
-    const c = h.troubleCodes;
-    out.push(
-      `- Check-engine light: ${c.checkEngineLight === null ? 'unknown' : c.checkEngineLight ? 'ON' : 'off'}`,
-      `- Stored codes: ${c.stored.join(', ') || 'none'}`,
-      `- Pending codes: ${c.pending.join(', ') || 'none'}`,
-    );
-    const incomplete = c.readinessMonitors.filter((m) => !m.complete).map((m) => m.name);
-    if (c.readinessMonitors.length) out.push(`- Readiness monitors not yet complete: ${incomplete.join(', ') || 'none'}`);
-  }
-  out.push('', '## Live data', '', '| Signal | Unit | Min | Mean | Max | First | Last | Samples |', '|---|---|---|---|---|---|---|---|');
+  out.push('', toReport(session.vehicle, session.codes, session.scan, units));
+  out.push('## Logged data', '', 'Statistics over the whole session for the signals that were logged.', '');
+  out.push('| Signal | Unit | Min | Mean | Max | First | Last | Samples |', '|---|---|---|---|---|---|---|---|');
   for (const s of computeStats(session, samples, units)) {
     const f = (v: number) => round(v, precision(s.signal));
     out.push(`| ${s.signal.name} | ${s.unit} | ${f(s.min)} | ${f(s.mean)} | ${f(s.max)} | ${f(s.first)} | ${f(s.last)} | ${s.count} |`);

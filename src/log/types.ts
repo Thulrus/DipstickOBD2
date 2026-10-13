@@ -1,3 +1,4 @@
+import type { VehicleScan } from '../obd/scan';
 import type { TroubleCodes } from '../obd/vehicle';
 
 export interface VehicleInfo {
@@ -20,6 +21,8 @@ export interface Session {
   sampleCount: number;
   /** Most recent trouble-code read during the session, if any. */
   codes: TroubleCodes | null;
+  /** Freeze frame, self-test results and a full snapshot, if they were read. */
+  scan?: VehicleScan | null;
   note: string;
 }
 
