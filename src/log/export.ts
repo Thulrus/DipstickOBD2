@@ -221,22 +221,24 @@ function scanForJson(scan: VehicleScan, units: UnitSystem) {
 
 function moduleSection(m: ModuleScan): string[] {
   const out = ['## Codes from other modules', ''];
-  if (!m.supported) return [...out, m.note ?? 'Not supported on this vehicle.', ''];
+  const older = m.method === 'emissions-only';
   out.push(
-    `Read ${new Date(m.readAt).toLocaleString()}. Every control module that answered a read-stored-codes request, ${m.modules.length} found (${m.probed + 1} request ids tried${m.complete ? '' : ', scan stopped early'}).`,
-    'Modules are identified by the CAN id they answered from; the vehicle did not say what they are. "Code" is the raw code shown as SAE letter and digits, then the failure-type byte after a dash (UDS); some manufacturers format codes differently, so "Raw" is the authoritative value. Status flags are the standard UDS status bits.',
+    older
+      ? `Read ${new Date(m.readAt).toLocaleString()}. Each emissions-related computer that answered on the OBD port, ${m.modules.length} found, identified by the bus address it answered from; the vehicle did not say what they are.`
+      : `Read ${new Date(m.readAt).toLocaleString()}. Every control module that answered a read-stored-codes request, ${m.modules.length} found (${m.probed + 1} request ids tried${m.complete ? '' : ', scan stopped early'}). Modules are identified by the CAN id they answered from; the vehicle did not say what they are. "Code" is the raw code shown as SAE letter and digits, then the failure-type byte after a dash (UDS); some manufacturers format codes differently, so "Raw" is the authoritative value. Status flags are the standard UDS status bits.`,
     '',
   );
   if (m.note) out.push(m.note, '');
   for (const mod of m.modules) {
-    out.push(`### Module answering from ${mod.responseId} (${mod.protocol}, asked at ${mod.requestId})`, '');
+    out.push(`### ${older ? 'Computer' : 'Module'} answering from ${mod.responseId} (${mod.protocol}${older ? '' : `, asked at ${mod.requestId}`})`, '');
+    if (mod.info?.length) out.push(...mod.info.map((i) => `- ${i}`), '');
     if (mod.note) out.push(mod.note, '');
     else if (mod.codes.length === 0) out.push('No codes stored.', '');
     else {
       out.push('| Code | Raw | Status | Status flags |', '|---|---|---|---|');
       out.push(...mod.codes.map((c) => `| ${c.code} | ${c.raw} | ${c.status} | ${c.flags.join(', ') || (mod.protocol === 'KWP2000' ? 'module-defined' : '')} |`), '');
     }
-    out.push(`Full reply: \`${mod.raw}\``, '');
+    out.push(`Full reply: \`${mod.raw || 'none'}\``, '');
   }
   return out;
 }

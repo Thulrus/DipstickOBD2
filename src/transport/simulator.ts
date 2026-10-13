@@ -7,6 +7,8 @@ export interface SimulatorOptions {
   latencyMs?: number;
   /** Set false to imitate a clone that rejects the reply-count digit. */
   replyCount?: boolean;
+  /** A stored code on the pretend transmission computer, which otherwise has no codes. */
+  transmissionCode?: string;
   /** Seconds of simulated driving elapsed; injectable for tests. */
   clock?: () => number;
 }
@@ -76,6 +78,7 @@ export class SimulatorTransport implements Transport {
   private searched = false;
   private header = '7DF';
   private receiveAddress: string | null = null;
+  private transmissionStored: string[];
   private stored = ['P0174'];
   private pending = ['P0171'];
   private input = '';
@@ -84,6 +87,7 @@ export class SimulatorTransport implements Transport {
     this.protocol = options.protocol ?? '6';
     this.latencyMs = options.latencyMs ?? 40;
     this.replyCount = options.replyCount ?? true;
+    this.transmissionStored = options.transmissionCode ? [options.transmissionCode] : [];
     const t0 = Date.now();
     this.clock = options.clock ?? (() => (Date.now() - t0) / 1000);
   }
@@ -159,9 +163,37 @@ export class SimulatorTransport implements Transport {
     const lines: string[] = [];
     const engine = this.payloads(service, pid);
     for (const payload of engine) lines.push(...this.frame(payload, '7E8', 0x10));
-    // A transmission computer that only answers the "what do you support" query.
-    if (service === 0x01 && pid === 0x00 && !firstOnly) lines.push(...this.frame([0x41, 0x00, 0x80, 0x00, 0x00, 0x00], '7E9', 0x18));
+    // A transmission computer. Replies are skipped when only one is wanted, as a real adapter would.
+    if (!firstOnly) for (const payload of this.transmission(service, pid)) lines.push(...this.frame(payload, '7E9', 0x18));
     return lines;
+  }
+
+  /** What the pretend transmission computer says: little, as on a real older vehicle. */
+  private transmission(service: number, pid: number): number[][] {
+    const can = this.protocol === '6';
+    switch (service) {
+      case 0x01:
+        if (pid === 0x00) return [[0x41, 0x00, 0x80, 0x00, 0x00, 0x00]];
+        if (pid === 0x01) return [[0x41, 0x01, (this.transmissionStored.length ? 0x80 : 0) | this.transmissionStored.length, 0x00, 0x00, 0x00]];
+        return [];
+      case 0x03: {
+        if (!this.transmissionStored.length) return [];
+        const codes = this.transmissionStored.flatMap(encodeDtc);
+        return can ? [[0x43, codes.length / 2, ...codes]] : [[0x43, ...codes, ...Array<number>(6 - codes.length).fill(0)]];
+      }
+      case 0x09:
+        return pid === 0x04 ? this.mode09(0x04, 'TCM-CAL-0001', 16, can) : [];
+      default:
+        return [];
+    }
+  }
+
+  /** A service 09 text reply: one long CAN message, or numbered four-byte pieces on older buses. */
+  private mode09(pid: number, text: string, length: number, can: boolean): number[][] {
+    const chars = [...text].map((c) => c.charCodeAt(0));
+    const padded = [...chars, ...Array<number>(length - chars.length).fill(0)];
+    if (can) return [[0x49, pid, 0x01, ...padded]];
+    return Array.from({ length: Math.ceil(padded.length / 4) }, (_, i) => [0x49, pid, i + 1, ...padded.slice(i * 4, i * 4 + 4)]);
   }
 
   private moduleReplies(service: number, subFunction: number): string[] {
@@ -241,8 +273,11 @@ export class SimulatorTransport implements Transport {
       case 0x04:
         this.stored = [];
         this.pending = [];
+        this.transmissionStored = [];
         return [[0x44]];
       case 0x09: {
+        if (pid === 0x04) return this.mode09(0x04, 'ECM-CAL-9F21', 16, can);
+        if (pid === 0x0a) return this.mode09(0x0a, 'ECM-ENGINE', 20, can);
         if (pid !== 0x02) return [];
         const chars = [...VIN].map((c) => c.charCodeAt(0));
         if (can) return [[0x49, 0x02, 0x01, ...chars]];

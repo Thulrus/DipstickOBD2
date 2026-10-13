@@ -101,7 +101,8 @@ export function Codes() {
         <p className="note">
           Airbag, ABS, body, transmission and any other computer that will answer. This reads their stored codes exactly as they are sent,
           without decoding them: copy the report into an AI assistant or search the codes yourself. It only reads, and never clears or
-          changes anything. It takes about a minute, and live logging pauses while it runs.
+          changes anything. On newer (CAN) vehicles it can take about a minute; older vehicles only expose their emissions computers, so
+          it is quick. Live logging pauses while it runs.
         </p>
         {modulesStep ? (
           <div className="row">
@@ -265,20 +266,27 @@ function CodeList({ title, hint, codes }: { title: string; hint: string; codes: 
 }
 
 function ModuleResults({ scan }: { scan: ModuleScan }) {
-  if (!scan.supported) return <p className="empty">{scan.note}</p>;
+  const noun = scan.method === 'emissions-only' ? 'computer' : 'module';
   return (
     <>
       <p className="note">
-        {scan.modules.length === 0
-          ? 'No modules answered.'
-          : `${scan.modules.length} module${scan.modules.length === 1 ? '' : 's'} answered`}
+        {scan.modules.length === 0 ? `No ${noun}s answered.` : `${scan.modules.length} ${noun}${scan.modules.length === 1 ? '' : 's'} answered`}
         {scan.complete ? '' : ' (scan stopped early)'}. {scan.note}
       </p>
       {scan.modules.map((m) => (
         <div key={m.responseId}>
           <h3>
-            Module {m.responseId} <span className="unit">{m.protocol}</span>
+            {noun === 'computer' ? 'Computer' : 'Module'} {m.responseId} <span className="unit">{m.protocol}</span>
           </h3>
+          {m.info && m.info.length > 0 && (
+            <ul className="monitors">
+              {m.info.map((line, i) => (
+                <li key={i}>
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           {m.note ? (
             <p className="empty">{m.note}</p>
           ) : m.codes.length === 0 ? (
@@ -286,10 +294,11 @@ function ModuleResults({ scan }: { scan: ModuleScan }) {
           ) : (
             <ul className="codes">
               {m.codes.map((c) => (
-                <li key={c.raw}>
+                <li key={`${c.raw}-${c.flags.join()}`}>
                   <b>{c.code}</b>
                   <span>
-                    raw {c.raw}, status {c.status}
+                    raw {c.raw}
+                    {c.status && `, status ${c.status}`}
                     {c.flags.length > 0 && ` (${c.flags.join(', ')})`}
                   </span>
                   <a href={`https://www.google.com/search?q=${encodeURIComponent(c.code.split('-')[0] + ' code')}`} target="_blank" rel="noreferrer">
