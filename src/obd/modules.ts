@@ -1,6 +1,6 @@
 import { ElmError, type Elm327 } from '../elm/elm327';
 import type { Message } from '../elm/parse';
-import { decodeDtc } from './dtc';
+import { decodeDtc, decodeMonitorStatus, parseDtcs } from './dtc';
 
 /**
  * A read-only sweep of every control module that will talk to us (airbag, ABS,
@@ -28,8 +28,10 @@ export interface ModuleResult {
   requestId: string;
   /** CAN id the module answered from, e.g. "7B8". This identifies the module. */
   responseId: string;
-  protocol: 'UDS' | 'KWP2000';
+  protocol: 'UDS' | 'KWP2000' | 'OBD-II';
   codes: ModuleCode[];
+  /** Other facts the module volunteered (calibration ids, name...), one per line. */
+  info?: string[];
   /** The whole reply as hex, so nothing is lost if our reading of it is wrong. */
   raw: string;
   /** Set when the module answered but declined to give codes. */
@@ -45,6 +47,11 @@ export interface ModuleScan {
   probed: number;
   /** False if the scan was stopped before it covered every id. */
   complete: boolean;
+  /**
+   * `can-sweep`: tried every diagnostic id on 11-bit CAN, so it can reach airbag, ABS and so on.
+   * `emissions-only`: older buses, where the OBD port reaches only the emissions-related computers.
+   */
+  method: 'can-sweep' | 'emissions-only';
   note?: string;
 }
 
@@ -131,15 +138,8 @@ const SWEEP_TIMEOUT = '20';
 const MAX_BUS_FAILURES = 12;
 
 export async function scanModules(elm: Elm327, onStep?: (step: string) => void, signal?: AbortSignal): Promise<ModuleScan> {
-  const scan: ModuleScan = { readAt: Date.now(), supported: true, modules: [], probed: 0, complete: false };
-  if (elm.bus !== 'can11') {
-    return {
-      ...scan,
-      supported: false,
-      complete: true,
-      note: 'Scanning other modules needs an 11-bit CAN vehicle (most vehicles from about 2008). This one uses a different bus.',
-    };
-  }
+  const scan: ModuleScan = { readAt: Date.now(), supported: true, modules: [], probed: 0, complete: false, method: 'can-sweep' };
+  if (elm.bus !== 'can11') return scanEmissionsComputers(elm, scan, onStep, signal);
 
   const found = new Map<string, ModuleResult>();
   const record = (result: ModuleResult) => {
@@ -201,5 +201,110 @@ export async function scanModules(elm: Elm327, onStep?: (step: string) => void, 
   }
 
   scan.modules = [...found.values()].sort((a, b) => a.responseId.localeCompare(b.responseId));
+  return scan;
+}
+
+/** Packs a code string like "P0705" back into its two wire bytes. */
+function dtcBytes(code: string): number[] {
+  const n = parseInt(code.slice(1), 16);
+  return [('PCBU'.indexOf(code[0]!) << 6) | (n >> 8), n & 0xff];
+}
+
+/** The data bytes of a service 09 reply: older buses split them across numbered messages, CAN sends one. */
+function mode09Bytes(messages: Message[], pid: number, ecu: string): number[] {
+  return messages
+    .filter((m) => m.ecu === ecu && m.data[0] === 0x49 && m.data[1] === pid)
+    .sort((a, b) => (a.data[2] ?? 0) - (b.data[2] ?? 0))
+    .flatMap((m) => m.data.slice(3));
+}
+
+/** Printable text in a byte run, split wherever the vehicle padded with zeros. */
+function textRuns(bytes: number[]): string[] {
+  return bytes
+    .map((c) => (c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : '\0'))
+    .join('')
+    .split('\0')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Older buses (and 29-bit CAN): the OBD port reaches only the computers the
+ * emissions standard covers, usually the engine and sometimes the
+ * transmission. We can't reach airbag, ABS or body modules from here, but we
+ * can say which computer each code came from and read what else those
+ * computers will tell us.
+ */
+async function scanEmissionsComputers(elm: Elm327, scan: ModuleScan, onStep?: (step: string) => void, signal?: AbortSignal): Promise<ModuleScan> {
+  scan.method = 'emissions-only';
+  scan.note =
+    "This vehicle's OBD port only reaches its emissions-related computers (engine, sometimes transmission). Airbag, ABS and body modules are on a separate diagnostic line that a plain ELM327 adapter cannot reach.";
+  const ecus = new Map<string, ModuleResult>();
+  const entry = (ecu: string): ModuleResult => {
+    let e = ecus.get(ecu);
+    if (!e) ecus.set(ecu, (e = { requestId: 'all', responseId: ecu, protocol: 'OBD-II', codes: [], info: [], raw: '' }));
+    return e;
+  };
+  const step = async (label: string, run: () => Promise<void>): Promise<void> => {
+    if (signal?.aborted) return;
+    scan.probed++;
+    onStep?.(label);
+    try {
+      await run();
+    } catch (e) {
+      if (e instanceof ElmError && e.code === 'closed') throw e;
+      /* this part isn't supported or glitched: keep what else we can get */
+    }
+  };
+
+  for (const [service, label] of [[0x03, 'stored'], [0x07, 'pending'], [0x0a, 'permanent']] as const) {
+    await step(`Reading ${label} codes from each computer`, async () => {
+      const messages = await elm.obd(hex2(service));
+      for (const ecu of new Set(messages.filter((m) => m.data[0] === service + 0x40).map((m) => m.ecu))) {
+        const e = entry(ecu);
+        const mine = messages.filter((m) => m.ecu === ecu);
+        for (const code of parseDtcs(mine, service, elm.bus)) e.codes.push({ code, raw: hex(dtcBytes(code)), status: '', flags: [label] });
+        e.raw += `${e.raw ? '; ' : ''}${label}: ${mine.map((m) => hex(m.data)).join(' | ')}`;
+      }
+    });
+  }
+  await step('Reading check-engine light status per computer', async () => {
+    for (const m of await elm.obd('0101')) {
+      if (m.data[0] !== 0x41 || m.data[1] !== 0x01) continue;
+      const s = decodeMonitorStatus(m.data[2] ?? 0, m.data[3] ?? 0, m.data[4] ?? 0, m.data[5] ?? 0);
+      const incomplete = s.monitors.filter((x) => !x.complete).map((x) => x.name);
+      entry(m.ecu).info!.push(
+        `Check-engine light ${s.mil ? 'ON' : 'off'}, ${s.dtcCount} stored code${s.dtcCount === 1 ? '' : 's'}; ${s.monitors.length} readiness monitors${incomplete.length ? `, not complete: ${incomplete.join(', ')}` : ''}`,
+      );
+    }
+  });
+  await step('Reading calibration ids', async () => {
+    const messages = await elm.obd('0904');
+    for (const ecu of new Set(messages.map((m) => m.ecu))) {
+      const ids = textRuns(mode09Bytes(messages, 0x04, ecu));
+      if (ids.length) entry(ecu).info!.push(`Calibration id: ${ids.join(', ')}`);
+    }
+  });
+  await step('Reading calibration verification numbers', async () => {
+    for (const m of await elm.obd('0906')) {
+      if (m.data[0] === 0x49 && m.data[1] === 0x06) entry(m.ecu).info!.push(`Calibration verification number (hex): ${hex(m.data.slice(3))}`);
+    }
+  });
+  await step('Reading computer names', async () => {
+    const messages = await elm.obd('090A');
+    for (const ecu of new Set(messages.map((m) => m.ecu))) {
+      const name = textRuns(mode09Bytes(messages, 0x0a, ecu)).join(' ');
+      if (name) entry(ecu).info!.push(`Name: ${name}`);
+    }
+  });
+  // The industry's older read-codes request. Most of these computers won't know it; whatever comes back is kept verbatim.
+  await step('Trying the older manufacturer read-codes request', async () => {
+    for (const m of await elm.obd(KWP_REQUEST)) {
+      if (m.data[0] === 0x58 || (m.data[0] === 0x7f && m.data[1] === 0x18)) entry(m.ecu).info!.push(`Service 18 reply (unverified): ${hex(m.data)}`);
+    }
+  });
+
+  scan.modules = [...ecus.values()].sort((a, b) => a.responseId.localeCompare(b.responseId));
+  scan.complete = !signal?.aborted;
   return scan;
 }

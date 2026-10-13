@@ -305,14 +305,47 @@ describe('other modules', () => {
     expect(scan.complete).toBe(false);
     expect((await readTroubleCodes(elm)).stored).toEqual(['P0174']);
   });
+});
 
-  it('declines politely on buses it cannot scan', async () => {
-    const transport = new SimulatorTransport({ protocol: '3', latencyMs: 1 });
+describe('older-bus module scan (ISO 9141-2)', () => {
+  async function scanTruck(options: { transmissionCode?: string } = {}) {
+    const transport = new SimulatorTransport({ protocol: '3', latencyMs: 1, ...options });
     await transport.open();
     const elm = new Elm327(transport);
     await elm.init();
-    const scan = await scanModules(elm);
-    expect(scan.supported).toBe(false);
-    expect(scan.modules).toEqual([]);
+    return { elm, scan: await scanModules(elm) };
+  }
+
+  it('lists each emissions computer with its own codes and identification', async () => {
+    const { elm, scan } = await scanTruck({ transmissionCode: 'P0705' });
+    expect(scan.supported).toBe(true);
+    expect(scan.method).toBe('emissions-only');
+    expect(scan.complete).toBe(true);
+    expect(scan.note).toContain('emissions-related');
+    const engine = scan.modules.find((m) => m.responseId === '10')!;
+    const trans = scan.modules.find((m) => m.responseId === '18')!;
+    expect(engine.codes.map((c) => [c.code, c.raw, c.flags[0]])).toEqual([
+      ['P0174', '01 74', 'stored'],
+      ['P0171', '01 71', 'pending'],
+    ]);
+    expect(trans.codes.map((c) => [c.code, c.raw])).toEqual([['P0705', '07 05']]);
+    expect(engine.info).toContain('Calibration id: ECM-CAL-9F21');
+    expect(engine.info).toContain('Name: ECM-ENGINE');
+    expect(trans.info).toContain('Calibration id: TCM-CAL-0001');
+    expect(trans.info!.some((i) => i.startsWith('Check-engine light ON, 1 stored code'))).toBe(true);
+    // Reading must not disturb anything: the usual code read still works.
+    expect((await readTroubleCodes(elm)).stored).toEqual(['P0174', 'P0705']);
+
+    const text = toReport({ vin: null, adapter: 'ELM327 v1.5', protocol: '3', protocolName: 'ISO 9141-2' }, null, null, 'metric', scan);
+    expect(text).toContain('Computer answering from 18 (OBD-II)');
+    expect(text).toContain('| P0705 | 07 05 |');
+    expect(text).toContain('- Calibration id: TCM-CAL-0001');
+  });
+
+  it('reports a computer with no codes as having none', async () => {
+    const { scan } = await scanTruck();
+    // The transmission computer still shows up (it answers status and identification), just with no codes.
+    expect(scan.modules.find((m) => m.responseId === '18')!.codes).toEqual([]);
+    expect(scan.modules.find((m) => m.responseId === '10')!.codes).toHaveLength(2);
   });
 });
