@@ -519,3 +519,26 @@ th:first-child {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+.help {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+}
+
+.help b {
+  color: var(--text);
+}
+
+.help ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

@@ -31,6 +31,8 @@ interface State {
   /** What the connect sequence is doing right now. */
   step: string;
   error: string | null;
+  /** The device picker was closed without a choice, usually because the adapter wasn't listed. */
+  pickerDismissed: boolean;
   demo: boolean;
   adapter: AdapterInfo | null;
   vin: string | null;
@@ -68,6 +70,7 @@ export const useApp = create<State>(() => ({
   status: 'idle',
   step: '',
   error: null,
+  pickerDismissed: false,
   demo: false,
   adapter: null,
   vin: null,
@@ -156,7 +159,7 @@ function pollable(): Signal[] {
 
 export async function connect(kind: 'serial' | 'demo'): Promise<void> {
   if (get().status !== 'idle') return;
-  set({ status: 'connecting', step: 'Waiting for you to pick the adapter', error: null, demo: kind === 'demo' });
+  set({ status: 'connecting', step: 'Waiting for you to pick the adapter', error: null, pickerDismissed: false, demo: kind === 'demo' });
   let opened: Transport | null = null;
   try {
     if (kind === 'demo') {
@@ -166,7 +169,7 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
         opened = await WebSerialTransport.request();
       } catch (e) {
         // Closing the picker without choosing isn't an error worth showing.
-        if (e instanceof DOMException && e.name === 'NotFoundError') return set({ status: 'idle', step: '' });
+        if (e instanceof DOMException && e.name === 'NotFoundError') return set({ status: 'idle', step: '', pickerDismissed: true });
         throw e;
       }
     }
