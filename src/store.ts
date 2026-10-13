@@ -6,6 +6,7 @@ import type { Marker, Session } from './log/types';
 import { Poller, type Sample } from './obd/poller';
 import { ADAPTER_VOLTAGE_PID, DEFAULT_SIGNAL_IDS, SIGNALS, type Signal } from './obd/signals';
 import { defaultUnitSystem, type UnitSystem } from './obd/units';
+import { scanModules, type ModuleScan } from './obd/modules';
 import { scanVehicle, type VehicleScan } from './obd/scan';
 import { clearTroubleCodes, readSupportedPids, readTroubleCodes, readVin, type TroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
@@ -60,6 +61,10 @@ interface State {
   scan: VehicleScan | null;
   /** What the background scan is reading, or '' when it isn't running. */
   scanStep: string;
+  /** Codes from the other modules (airbag, ABS...); only read when the user asks. */
+  modules: ModuleScan | null;
+  /** What the module scan is doing, or '' when it isn't running. */
+  modulesStep: string;
   sessionId: string | null;
 }
 
@@ -103,6 +108,8 @@ export const useApp = create<State>(() => ({
   codesBusy: false,
   scan: null,
   scanStep: '',
+  modules: null,
+  modulesStep: '',
   sessionId: null,
 }));
 
@@ -119,6 +126,7 @@ let uiTimer: ReturnType<typeof setInterval> | null = null;
 let pendingLive: Record<string, LiveValue> = {};
 let supportedPids: ReadonlySet<number> = new Set();
 let sampleCounter = 0;
+let moduleScanAbort: AbortController | null = null;
 
 function describe(error: unknown): string {
   if (error instanceof ElmError) {
@@ -245,7 +253,7 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     void requestPersistence();
 
     supportedPids = pids;
-    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, live: {}, markers: [], sessionId: session.id });
+    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, modules: null, live: {}, markers: [], sessionId: session.id });
     poller = new Poller(driver);
     poller.onSample = onSample;
     poller.onError = (e) => void cleanup(describe(e));
@@ -267,11 +275,12 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
 async function cleanup(error: string | null): Promise<void> {
   const [t, p, r] = [transport, poller, recorder];
   if (!t) return;
+  moduleScanAbort?.abort();
   transport = elm = poller = recorder = null;
   if (uiTimer) clearInterval(uiTimer);
   uiTimer = null;
   pendingLive = {};
-  set({ status: 'idle', disconnecting: false, step: '', error, samplesPerSecond: 0, sessionId: null, scanStep: '' });
+  set({ status: 'idle', disconnecting: false, step: '', error, samplesPerSecond: 0, sessionId: null, scanStep: '', modulesStep: '' });
   dropWakeLock();
   // Poller first, so it can't write to a transport that is closing under it.
   if (p) await Promise.race([p.stop(), new Promise((res) => setTimeout(res, 1500))]);
@@ -361,6 +370,37 @@ async function runScan(): Promise<void> {
   } finally {
     if (elm === driver || !elm) set({ scanStep: '' });
   }
+}
+
+/**
+ * Reads the stored codes from every module that answers. The scan points the
+ * adapter at other computers, so live polling is paused for the duration and
+ * resumes afterwards; the log just has a gap.
+ */
+export async function scanAllModules(): Promise<void> {
+  const driver = elm;
+  if (!driver || get().modulesStep || get().scanStep || get().codesBusy) return;
+  const abort = (moduleScanAbort = new AbortController());
+  set({ modulesStep: 'Starting' });
+  try {
+    await poller?.stop();
+    const modules = await scanModules(driver, (modulesStep) => elm === driver && set({ modulesStep }), abort.signal);
+    if (elm !== driver) return;
+    recorder?.update({ modules });
+    set({ modules });
+  } catch (e) {
+    if (elm === driver) set({ error: describe(e) });
+  } finally {
+    if (elm === driver) {
+      poller?.start();
+      set({ modulesStep: '' });
+    }
+    if (moduleScanAbort === abort) moduleScanAbort = null;
+  }
+}
+
+export function stopModuleScan(): void {
+  moduleScanAbort?.abort();
 }
 
 export async function refreshCodes(): Promise<void> {

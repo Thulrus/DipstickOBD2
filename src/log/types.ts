@@ -1,3 +1,4 @@
+import type { ModuleScan } from '../obd/modules';
 import type { VehicleScan } from '../obd/scan';
 import type { TroubleCodes } from '../obd/vehicle';
 
@@ -23,6 +24,8 @@ export interface Session {
   codes: TroubleCodes | null;
   /** Freeze frame, self-test results and a full snapshot, if they were read. */
   scan?: VehicleScan | null;
+  /** Codes read from every module that answered (airbag, ABS...), if the user ran that scan. */
+  modules?: ModuleScan | null;
   /** Codes and light status read again just before disconnecting. */
   endCodes?: TroubleCodes | null;
   /** Things the vehicle can't report that the driver noted as they happened. */

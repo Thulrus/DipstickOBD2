@@ -1,3 +1,4 @@
+import type { ModuleScan } from '../obd/modules';
 import type { VehicleScan } from '../obd/scan';
 import { SIGNAL_BY_ID, SIGNALS, type Signal } from '../obd/signals';
 import { displayUnit, formatValue, toDisplay, type UnitSystem } from '../obd/units';
@@ -190,6 +191,8 @@ function sessionHeader(session: Session, units: UnitSystem) {
       readinessMonitors: session.codes.status?.monitors ?? [],
     },
     scan: session.scan ? scanForJson(session.scan, units) : null,
+    // Every module that answered, with its codes exactly as sent (hex) and the best-effort letter form.
+    moduleCodes: session.modules ?? null,
   };
 }
 
@@ -216,12 +219,40 @@ function scanForJson(scan: VehicleScan, units: UnitSystem) {
   };
 }
 
+function moduleSection(m: ModuleScan): string[] {
+  const out = ['## Codes from other modules', ''];
+  if (!m.supported) return [...out, m.note ?? 'Not supported on this vehicle.', ''];
+  out.push(
+    `Read ${new Date(m.readAt).toLocaleString()}. Every control module that answered a read-stored-codes request, ${m.modules.length} found (${m.probed + 1} request ids tried${m.complete ? '' : ', scan stopped early'}).`,
+    'Modules are identified by the CAN id they answered from; the vehicle did not say what they are. "Code" is the raw code shown as SAE letter and digits, then the failure-type byte after a dash (UDS); some manufacturers format codes differently, so "Raw" is the authoritative value. Status flags are the standard UDS status bits.',
+    '',
+  );
+  if (m.note) out.push(m.note, '');
+  for (const mod of m.modules) {
+    out.push(`### Module answering from ${mod.responseId} (${mod.protocol}, asked at ${mod.requestId})`, '');
+    if (mod.note) out.push(mod.note, '');
+    else if (mod.codes.length === 0) out.push('No codes stored.', '');
+    else {
+      out.push('| Code | Raw | Status | Status flags |', '|---|---|---|---|');
+      out.push(...mod.codes.map((c) => `| ${c.code} | ${c.raw} | ${c.status} | ${c.flags.join(', ') || (mod.protocol === 'KWP2000' ? 'module-defined' : '')} |`), '');
+    }
+    out.push(`Full reply: \`${mod.raw}\``, '');
+  }
+  return out;
+}
+
 /**
  * The diagnostic picture as Markdown: codes, readiness, freeze frame, a
  * reading of every supported sensor and the vehicle's self-test results.
  * Sections with nothing to report are left out.
  */
-export function toReport(vehicle: VehicleInfo, codes: TroubleCodes | null, scan: VehicleScan | null | undefined, units: UnitSystem): string {
+export function toReport(
+  vehicle: VehicleInfo,
+  codes: TroubleCodes | null,
+  scan: VehicleScan | null | undefined,
+  units: UnitSystem,
+  modules?: ModuleScan | null,
+): string {
   const out: string[] = [];
   const table = (head: string[], rows: string[][]) => {
     out.push(`| ${head.join(' | ')} |`, `|${head.map(() => '---').join('|')}|`, ...rows.map((r) => `| ${r.join(' | ')} |`), '');
@@ -252,6 +283,7 @@ export function toReport(vehicle: VehicleInfo, codes: TroubleCodes | null, scan:
       table(['Monitor', 'Status'], monitors.map((m) => [m.name, m.complete ? 'Complete' : 'Not complete']));
     }
   }
+  if (modules) out.push(...moduleSection(modules));
   if (!scan) return out.join('\n');
 
   if (scan.fuelSystem.length) {
@@ -306,7 +338,7 @@ export function toSummary(session: Session, samples: SampleColumns, units: UnitS
   out.push(`- Recorded: ${sessionTitle(session)} (${formatDuration(session.endedAt - session.startedAt)})`);
   if (session.odometer) out.push(`- Odometer: ${session.odometer}`);
   if (session.note) out.push(`- Note: ${session.note}`);
-  out.push('', toReport(session.vehicle, session.codes, session.scan, units));
+  out.push('', toReport(session.vehicle, session.codes, session.scan, units, session.modules));
   const end = session.endCodes;
   if (end) {
     out.push(
