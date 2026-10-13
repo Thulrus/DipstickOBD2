@@ -1,8 +1,10 @@
-import { setUnits, useApp } from '../store';
+import { setKeepAwake, setUnits, useApp } from '../store';
 
 export function Settings() {
   const units = useApp((s) => s.units);
   const adapter = useApp((s) => s.adapter);
+  const keepAwake = useApp((s) => s.keepAwake);
+  const canKeepAwake = 'wakeLock' in navigator;
 
   return (
     <>
@@ -17,6 +19,19 @@ export function Settings() {
           ))}
         </div>
         <p className="note">Applies to the dashboard and to exports. Logs are stored in metric, so you can switch at any time.</p>
+      </section>
+
+      <section className="card">
+        <h2>Screen</h2>
+        <label className="radio">
+          <input type="checkbox" checked={keepAwake && canKeepAwake} disabled={!canKeepAwake} onChange={(e) => setKeepAwake(e.target.checked)} />
+          Keep the screen on while connected
+        </label>
+        <p className="note">
+          {canKeepAwake
+            ? 'Logging stops if the screen turns off or you switch to another app, so leave this on for drives. Battery saver mode can override it.'
+            : "This browser can't keep the screen on. Raise your device's screen timeout before a drive, because logging stops when the screen turns off."}
+        </p>
       </section>
 
       {adapter && (

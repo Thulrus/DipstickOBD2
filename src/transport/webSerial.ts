@@ -4,6 +4,29 @@ export function webSerialSupported(): boolean {
   return typeof navigator !== 'undefined' && 'serial' in navigator;
 }
 
+/** The standard Bluetooth Serial Port Profile service, used by ELM327 adapters. */
+const SPP_UUID = '00001101-0000-1000-8000-00805f9b34fb';
+
+async function requestPort(): Promise<SerialPort> {
+  // Android only has Bluetooth serial ports. Saying so matters: Chrome checks
+  // its Nearby devices permission, and offers to fix it, only for requests
+  // that are explicitly Bluetooth-only. An unfiltered request just shows an
+  // empty list when the permission is missing.
+  if (/Android/i.test(navigator.userAgent)) {
+    try {
+      return await navigator.serial.requestPort({
+        filters: [{ bluetoothServiceClassId: SPP_UUID }],
+        allowedBluetoothServiceClassIds: [SPP_UUID],
+      });
+    } catch (e) {
+      // NotFoundError means the user closed the picker. Anything else means
+      // this browser rejected the options, so fall back to asking for any port.
+      if (e instanceof DOMException && e.name === 'NotFoundError') throw e;
+    }
+  }
+  return navigator.serial.requestPort();
+}
+
 /**
  * Web Serial transport. Covers Bluetooth Classic (SPP) adapters that have
  * been paired in the OS Bluetooth settings, plus USB adapters on desktop.
@@ -24,8 +47,7 @@ export class WebSerialTransport implements Transport {
 
   /** Shows the browser's device picker. Must be called from a user gesture. */
   static async request(): Promise<WebSerialTransport> {
-    const port = await navigator.serial.requestPort();
-    return new WebSerialTransport(port);
+    return new WebSerialTransport(await requestPort());
   }
 
   /** A port the user has already granted, if there is exactly one. */

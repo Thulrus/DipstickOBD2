@@ -40,7 +40,13 @@ interface State {
   available: Signal[];
   /** Signal ids the user wants shown and logged, in display order. */
   selected: string[];
+  /** Signal ids shown as large tiles at the top of the dashboard. */
+  pinned: string[];
   units: UnitSystem;
+  /** User preference: keep the screen on while connected. */
+  keepAwake: boolean;
+  /** Whether the browser is actually holding the screen on right now. */
+  screenAwake: boolean;
   live: Record<string, LiveValue>;
   samplesPerSecond: number;
   codes: TroubleCodes | null;
@@ -76,7 +82,10 @@ export const useApp = create<State>(() => ({
   vin: null,
   available: [],
   selected: load('dipstick.signals', DEFAULT_SIGNAL_IDS),
+  pinned: load('dipstick.pinned', ['rpm', 'coolant_temp']),
   units: load('dipstick.units', defaultUnitSystem()),
+  keepAwake: load('dipstick.keepAwake', true),
+  screenAwake: false,
   live: {},
   samplesPerSecond: 0,
   codes: null,
@@ -110,11 +119,26 @@ function describe(error: unknown): string {
 }
 
 async function holdWakeLock(): Promise<void> {
+  if (wakeLock || !get().keepAwake) return;
   try {
-    wakeLock = (await navigator.wakeLock?.request('screen')) ?? null;
+    const lock = (await navigator.wakeLock?.request('screen')) ?? null;
+    wakeLock = lock;
+    // The browser releases the lock on its own when the page is hidden.
+    lock?.addEventListener('release', () => {
+      if (wakeLock === lock) wakeLock = null;
+      set({ screenAwake: wakeLock !== null });
+    });
   } catch {
     wakeLock = null; // denied (e.g. battery saver); logging still works while the screen is on
   }
+  set({ screenAwake: wakeLock !== null });
+}
+
+function dropWakeLock(): void {
+  const lock = wakeLock;
+  wakeLock = null;
+  void lock?.release().catch(() => {});
+  set({ screenAwake: false });
 }
 
 // The browser drops a wake lock whenever the page is hidden.
@@ -232,8 +256,7 @@ async function cleanup(error: string | null): Promise<void> {
   uiTimer = null;
   pendingLive = {};
   set({ status: 'idle', step: '', error, samplesPerSecond: 0, sessionId: null });
-  void wakeLock?.release().catch(() => {});
-  wakeLock = null;
+  dropWakeLock();
   // Poller first, so it can't write to a transport that is closing under it.
   if (p) await Promise.race([p.stop(), new Promise((res) => setTimeout(res, 1500))]);
   await r?.stop();
@@ -254,6 +277,20 @@ export function setTab(tab: Tab): void {
 export function setUnits(units: UnitSystem): void {
   save('dipstick.units', units);
   set({ units });
+}
+
+export function setKeepAwake(keepAwake: boolean): void {
+  save('dipstick.keepAwake', keepAwake);
+  set({ keepAwake });
+  if (!keepAwake) dropWakeLock();
+  else if (get().status === 'connected') void holdWakeLock();
+}
+
+export function togglePin(id: string): void {
+  const { pinned } = get();
+  const next = pinned.includes(id) ? pinned.filter((s) => s !== id) : [...pinned, id];
+  save('dipstick.pinned', next);
+  set({ pinned: next });
 }
 
 export function toggleSignal(id: string): void {

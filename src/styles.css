@@ -272,13 +272,68 @@ dialog h2 {
   border-radius: 14px;
 }
 
+.tile {
+  position: relative;
+}
+
+/* A full 44px touch target tucked into the corner of the tile. */
+.tile .pin {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 1.125rem;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.tile .pin[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.tiles.big {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+/* Pinned tiles: name on top, then the reading beside a larger trend line. */
+.tiles.big .tile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 16px;
+  align-items: center;
+}
+
+.tiles.big h3,
+.tiles.big .range {
+  grid-column: 1 / -1;
+}
+
+.tiles.big .value {
+  font-size: 3.25rem;
+  min-width: 3.2ch;
+}
+
+.tiles.big .spark {
+  height: 48px;
+}
+
 .tile h3 {
+  padding-right: 28px;
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.3;
+  /* Room for two lines, so long names wrap instead of losing their ending
+     ("...fuel trim B1" vs "B2") and the values still line up across a row. */
+  min-height: 2.6em;
+}
+
+.tiles.big h3 {
+  min-height: 0;
 }
 
 .tile .value {

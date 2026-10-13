@@ -37,7 +37,7 @@ export function ConnectPanel({ title, children }: { title: string; children?: Re
               itself, and without it the list is always empty.
             </li>
             <li>Check the adapter is under paired or saved devices in your Bluetooth settings. If it isn't, pair it there.</li>
-            <li>Fully close any other OBD2 app, then try again.</li>
+            <li>Fully close any other OBD2 app, then try again. If the adapter still isn't listed, restart your phone once.</li>
           </ol>
         </div>
       )}

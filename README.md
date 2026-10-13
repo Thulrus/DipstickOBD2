@@ -31,7 +31,7 @@ Not supported yet: iPhone and iPad (Safari has no way for a web page to reach th
 2. Pair the adapter in your device's Bluetooth settings. The PIN is usually `1234` or `0000`.
 3. Open the app, tap **Connect adapter**, and pick the adapter from the list.
 
-**Android: if the list says "No compatible devices found"**, Chrome is missing a permission that it doesn't ask for itself. Open Settings → Apps → Chrome → Permissions and allow **Nearby devices**, then try again.
+**Android: if the list says "No compatible devices found"**, Chrome is missing a permission that it doesn't ask for itself. Open Settings → Apps → Chrome → Permissions and allow **Nearby devices**, then try again. If the adapter still isn't listed, restart the phone once.
 
 Only one app can talk to the adapter at a time, so close any other OBD2 app first.
 

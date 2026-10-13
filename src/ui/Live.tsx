@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { SIGNAL_BY_ID, type Signal } from '../obd/signals';
 import { displayUnit, formatValue } from '../obd/units';
-import { toggleSignal, useApp, type LiveValue } from '../store';
+import { togglePin, toggleSignal, useApp, type LiveValue } from '../store';
 import { ConnectPanel } from './ConnectPanel';
 
 export function Live() {
@@ -11,6 +11,8 @@ export function Live() {
   const adapter = useApp((s) => s.adapter);
   const vin = useApp((s) => s.vin);
   const rate = useApp((s) => s.samplesPerSecond);
+  const pinned = useApp((s) => s.pinned);
+  const screenAwake = useApp((s) => s.screenAwake);
   const picker = useRef<HTMLDialogElement>(null);
 
   if (status !== 'connected') {
@@ -29,6 +31,9 @@ export function Live() {
 
   const availableIds = new Set(available.map((s) => s.id));
   const shown = selected.flatMap((id) => (availableIds.has(id) ? [SIGNAL_BY_ID.get(id)!] : []));
+  // Pinned tiles keep the order they were pinned in.
+  const big = pinned.flatMap((id) => shown.filter((s) => s.id === id));
+  const rest = shown.filter((s) => !pinned.includes(s.id));
 
   return (
     <>
@@ -37,6 +42,8 @@ export function Live() {
           <span className="rec" aria-hidden="true" /> Recording · {rate.toFixed(1)} readings/s
           <br />
           {vin ?? 'VIN not reported'} · {adapter?.protocolName}
+          <br />
+          {screenAwake ? 'Screen will stay on' : 'Screen may turn off'}
         </p>
         <button onClick={() => picker.current?.showModal()}>Signals</button>
       </div>
@@ -44,11 +51,20 @@ export function Live() {
       {shown.length === 0 ? (
         <p className="empty">No signals selected. Tap Signals to choose what to watch and log.</p>
       ) : (
-        <div className="tiles">
-          {shown.map((s) => (
-            <Tile key={s.id} signal={s} />
-          ))}
-        </div>
+        <>
+          {big.length > 0 && (
+            <div className="tiles big">
+              {big.map((s) => (
+                <Tile key={s.id} signal={s} pinned />
+              ))}
+            </div>
+          )}
+          <div className="tiles">
+            {rest.map((s) => (
+              <Tile key={s.id} signal={s} />
+            ))}
+          </div>
+        </>
       )}
 
       <dialog ref={picker} className="picker" onClick={(e) => e.target === picker.current && picker.current.close()}>
@@ -77,12 +93,20 @@ export function Live() {
   );
 }
 
-function Tile({ signal }: { signal: Signal }) {
+function Tile({ signal, pinned = false }: { signal: Signal; pinned?: boolean }) {
   const value = useApp((s) => s.live[signal.id]);
   const units = useApp((s) => s.units);
   const unit = displayUnit(signal, units);
   return (
     <article className="tile">
+      <button
+        className="pin"
+        aria-pressed={pinned}
+        aria-label={pinned ? `Unpin ${signal.name}` : `Pin ${signal.name} to the top`}
+        onClick={() => togglePin(signal.id)}
+      >
+        {pinned ? '★' : '☆'}
+      </button>
       <h3>{signal.name}</h3>
       <p className="value">
         {value ? formatValue(signal, value.v, units) : '–'}
