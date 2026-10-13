@@ -62,6 +62,8 @@ src/
   store.ts     App state and the connection lifecycle
 ```
 
+Manufacturer-specific knowledge, such as what a pre-CAN vehicle's self-test ids mean, lives in `src/obd/vehicles/` and is matched on the VIN.
+
 Each layer only knows about the one below it. To support a new kind of adapter connection, implement `Transport`. To add a sensor, add an entry to `SIGNALS` in `src/obd/signals.ts`.
 
 ## Roadmap

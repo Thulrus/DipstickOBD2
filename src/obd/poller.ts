@@ -25,6 +25,8 @@ interface Slot {
   slow: boolean;
   last: number;
   misses: number;
+  /** Has this PID ever produced a value this session? */
+  answered: boolean;
 }
 
 /**
@@ -35,7 +37,9 @@ interface Slot {
 export function pickNext<T extends { slow: boolean; last: number }>(slots: T[], now: number): T | null {
   const oldest = (list: T[]) => list.reduce<T | null>((best, s) => (!best || s.last < best.last ? s : best), null);
   const dueSlow = slots.filter((s) => s.slow && now - s.last >= SLOW_INTERVAL_MS);
-  return oldest(dueSlow) ?? oldest(slots.filter((s) => !s.slow)) ?? oldest(slots);
+  // Null when only slow signals are selected and none is due yet: the caller
+  // waits rather than hammering one of them.
+  return oldest(dueSlow) ?? oldest(slots.filter((s) => !s.slow));
 }
 
 export class Poller {
@@ -44,6 +48,8 @@ export class Poller {
   private loop: Promise<void> | null = null;
   /** Fixed at the first start, so pausing and resuming doesn't restart the log's clock. */
   private startedAt: number | null = null;
+  /** How many computers answer each PID, so the adapter knows when to stop listening. */
+  private responders: ReadonlyMap<number, number> = new Map();
   onSample: (sample: Sample) => void = () => {};
   onError: (error: Error) => void = () => {};
 
@@ -51,6 +57,10 @@ export class Poller {
     private readonly elm: Elm327,
     private readonly now: () => number = () => performance.now(),
   ) {}
+
+  setResponders(responders: ReadonlyMap<number, number>): void {
+    this.responders = responders;
+  }
 
   setSignals(signals: Signal[]): void {
     const previous = new Map(this.slots.map((s) => [s.pid, s]));
@@ -62,6 +72,7 @@ export class Poller {
       slow: sigs.every((s) => s.rate === 'slow'),
       last: previous.get(pid)?.last ?? -Infinity,
       misses: 0,
+      answered: previous.get(pid)?.answered ?? false,
     }));
   }
 
@@ -91,10 +102,14 @@ export class Poller {
         slot.last = this.now();
         failures = 0;
         if (!reading) {
-          if (++slot.misses >= MAX_MISSES) this.slots = this.slots.filter((s) => s !== slot);
+          // A PID that never answers isn't really supported: stop asking. One
+          // that used to answer has gone quiet because the engine computer is
+          // off (ignition off, or shutting down), so keep it for when it's back.
+          if (++slot.misses >= MAX_MISSES && !slot.answered) this.slots = this.slots.filter((s) => s !== slot);
           continue;
         }
         slot.misses = 0;
+        slot.answered = true;
         reading.values.forEach((v, i) => this.onSample({ t, signalId: slot.signals[i]!.id, v, raw: reading.raw }));
       } catch (e) {
         slot.last = this.now();
@@ -113,7 +128,7 @@ export class Poller {
       return v === null ? null : { values: [v], raw: '' };
     }
     const request = '01' + slot.pid.toString(16).toUpperCase().padStart(2, '0');
-    const d = pidData(await this.elm.obdSingle(request), slot.pid);
+    const d = pidData(await this.elm.obdSingle(request, this.responders.get(slot.pid) ?? 1), slot.pid);
     if (!d || slot.signals.some((s) => d.length < s.bytes)) return null;
     return {
       values: slot.signals.map((s) => s.decode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0)),

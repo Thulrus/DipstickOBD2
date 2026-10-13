@@ -2,6 +2,7 @@ import type { Elm327 } from '../elm/elm327';
 import type { Message } from '../elm/parse';
 import { decodeDtc } from './dtc';
 import { SIGNALS } from './signals';
+import { engineFirst, rawByEcu } from './vehicle';
 
 /**
  * A one-off "everything the vehicle will tell us" read, taken alongside the
@@ -19,8 +20,12 @@ export interface VehicleScan {
   obdStandard: string | null;
   /** One reading of every supported signal (metric), keyed by signal id. */
   snapshot: Record<string, number>;
+  /** The reply bytes behind each snapshot value, per answering computer. */
+  snapshotRaw?: Record<string, string>;
   /** Results of the vehicle's own component self-tests (service 06). */
   monitorTests: MonitorTest[];
+  /** How many self-tests the vehicle said it has; more than were read means some didn't answer. */
+  monitorTestsExpected?: number;
 }
 
 export interface FreezeFrame {
@@ -28,6 +33,8 @@ export interface FreezeFrame {
   dtc: string;
   /** Metric values keyed by signal id. */
   values: Record<string, number>;
+  /** The reply bytes behind each value. */
+  raw?: Record<string, string>;
 }
 
 export interface MonitorTest {
@@ -73,25 +80,44 @@ async function readSupported(elm: Elm327, service: number, suffix = ''): Promise
 }
 
 const reply = (messages: Message[], service: number, id: number) =>
-  messages.find((m) => m.data[0] === service + 0x40 && m.data[1] === id)?.data;
+  engineFirst(messages).find((m) => m.data[0] === service + 0x40 && m.data[1] === id)?.data;
 
-function decodeSignals(pid: number, d: number[], into: Record<string, number>): void {
+/**
+ * A request that came back empty gets asked again. A busy engine computer
+ * (engine running, or polling going on around the scan) sometimes answers
+ * too late for the adapter, and one silent reply shouldn't cost a result.
+ */
+async function ask(elm: Elm327, request: string, service: number, tries = 3): Promise<Message[]> {
+  let messages: Message[] = [];
+  for (let i = 0; i < tries; i++) {
+    messages = await elm.obd(request).catch(() => []);
+    if (messages.some((m) => m.data[0] === service + 0x40)) break;
+  }
+  return messages;
+}
+
+function decodeSignals(pid: number, d: number[], into: Record<string, number>, raw?: Record<string, string>, rawText = ''): void {
   for (const s of SIGNALS) {
-    if (s.pid === pid && d.length >= s.bytes) into[s.id] = s.decode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0);
+    if (s.pid === pid && d.length >= s.bytes) {
+      into[s.id] = s.decode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0);
+      if (raw) raw[s.id] = rawText;
+    }
   }
 }
 
 async function readFreezeFrame(elm: Elm327): Promise<FreezeFrame | null> {
   // PID 02 of the frame holds the code that triggered it; zero means no frame.
-  const trigger = reply(await elm.obd('020200'), 0x02, 0x02);
+  const trigger = reply(await ask(elm, '020200', 0x02), 0x02, 0x02);
   if (!trigger || word(trigger[3], trigger[4]) === 0) return null;
   const values: Record<string, number> = {};
+  const raw: Record<string, string> = {};
   for (const pid of await readSupported(elm, 0x02, '00')) {
     if (!SIGNALS.some((s) => s.pid === pid)) continue;
-    const d = reply(await elm.obd('02' + hex2(pid) + '00'), 0x02, pid);
-    if (d) decodeSignals(pid, d.slice(3), values);
+    const messages = await ask(elm, '02' + hex2(pid) + '00', 0x02);
+    const d = reply(messages, 0x02, pid);
+    if (d) decodeSignals(pid, d.slice(3), values, raw, rawByEcu(messages, 0x02, pid, 3));
   }
-  return { dtc: decodeDtc(trigger[3] ?? 0, trigger[4] ?? 0), values };
+  return { dtc: decodeDtc(trigger[3] ?? 0, trigger[4] ?? 0), values, raw };
 }
 
 const FUEL_SYSTEM: Record<number, string> = {
@@ -150,10 +176,13 @@ function testName(mid: number, tid: number): string {
   return `Test $${hex2(tid)}`;
 }
 
-async function readMonitorTests(elm: Elm327): Promise<MonitorTest[]> {
+async function readMonitorTests(elm: Elm327): Promise<{ tests: MonitorTest[]; expected: number }> {
   const tests: MonitorTest[] = [];
-  for (const id of await readSupported(elm, 0x06)) {
-    const messages = (await elm.obd('06' + hex2(id))).filter((m) => m.data[0] === 0x46);
+  const ids = await readSupported(elm, 0x06);
+  let answered = 0;
+  for (const id of ids) {
+    const messages = (await ask(elm, '06' + hex2(id), 0x06)).filter((m) => m.data[0] === 0x46);
+    if (messages.length) answered++;
     for (const { data } of messages) {
       if (elm.bus === 'legacy') {
         // Pre-CAN: one test per message, manufacturer-defined, with a single
@@ -199,7 +228,9 @@ async function readMonitorTests(elm: Elm327): Promise<MonitorTest[]> {
       }
     }
   }
-  return tests;
+  // "Expected" counts ids, which on CAN can each hold several tests, so only
+  // report a shortfall when an id went unanswered.
+  return { tests, expected: answered === ids.length ? tests.length : tests.length + (ids.length - answered) };
 }
 
 /**
@@ -232,13 +263,17 @@ export async function scanVehicle(elm: Elm327, supportedPids: ReadonlySet<number
   });
   await attempt('Reading all current values', async () => {
     const pids = [...new Set(SIGNALS.map((s) => s.pid))].filter((pid) => supportedPids.has(pid));
+    scan.snapshotRaw = {};
     for (const pid of pids) {
-      const d = reply(await elm.obd('01' + hex2(pid)), 0x01, pid);
-      if (d) decodeSignals(pid, d.slice(2), scan.snapshot);
+      const messages = await ask(elm, '01' + hex2(pid), 0x01, 2);
+      const d = reply(messages, 0x01, pid);
+      if (d) decodeSignals(pid, d.slice(2), scan.snapshot, scan.snapshotRaw, rawByEcu(messages, 0x01, pid));
     }
   });
   await attempt('Reading self-test results', async () => {
-    scan.monitorTests = await readMonitorTests(elm);
+    const { tests, expected } = await readMonitorTests(elm);
+    scan.monitorTests = tests;
+    scan.monitorTestsExpected = expected;
   });
   return scan;
 }

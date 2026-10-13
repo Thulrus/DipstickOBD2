@@ -8,7 +8,7 @@ import { parseKwpDtcs, parseUdsDtcs, scanModules, statusFlags } from './obd/modu
 import { pickNext, Poller, SLOW_INTERVAL_MS, type Sample } from './obd/poller';
 import { SIGNAL_BY_ID, SIGNALS } from './obd/signals';
 import { scanVehicle } from './obd/scan';
-import { pidData, readSupportedPids, readTroubleCodes, readVin, clearTroubleCodes } from './obd/vehicle';
+import { codesWereRead, engineFirst, pidData, readSupportedPids, readTroubleCodes, readVin, clearTroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
 
 describe('parseResponse', () => {
@@ -69,6 +69,16 @@ describe('decoding', () => {
   });
 });
 
+describe('engineFirst', () => {
+  it('prefers the engine computer whatever order replies arrive in', () => {
+    const tcm = { ecu: '18', data: [0x41, 0x21, 0x00, 0x10] };
+    const ecm = { ecu: '10', data: [0x41, 0x21, 0x00, 0x0b] };
+    expect(engineFirst([tcm, ecm])[0]).toBe(ecm);
+    expect(pidData([tcm, ecm], 0x21)).toEqual([0x00, 0x0b]);
+    expect(pidData([{ ecu: '7E9', data: [0x41, 0x0c, 1, 2] }, { ecu: '7E8', data: [0x41, 0x0c, 3, 4] }], 0x0c)).toEqual([3, 4]);
+  });
+});
+
 describe('pickNext', () => {
   it('round-robins fast PIDs and fits slow ones in when due', () => {
     const fastA = { slow: false, last: 100 };
@@ -76,7 +86,9 @@ describe('pickNext', () => {
     const slow = { slow: true, last: 0 };
     expect(pickNext([fastA, fastB, slow], 200)).toBe(fastB);
     expect(pickNext([fastA, fastB, slow], SLOW_INTERVAL_MS)).toBe(slow);
-    expect(pickNext([slow], 10)).toBe(slow);
+    // A lone slow signal is left alone until it is due, not polled flat out.
+    expect(pickNext([slow], 10)).toBeNull();
+    expect(pickNext([slow], SLOW_INTERVAL_MS)).toBe(slow);
     expect(pickNext([], 10)).toBeNull();
   });
 });
@@ -143,6 +155,40 @@ describe.each(['6', '3'] as const)('against the simulator (protocol %s)', (proto
         { monitor: 'Test $02', test: 'Component $01', value: 400, min: null, max: 256, unitId: null, passed: false, raw: '02 01 01 90 01 00' },
       ]);
     }
+  });
+
+  it('retries self-tests that go unanswered, and says so when some never answer', async () => {
+    const transport = new SimulatorTransport({ protocol, latencyMs: 1, flakySelfTests: true, clock: () => 300 });
+    await transport.open();
+    const elm = new Elm327(transport);
+    await elm.init();
+    const scan = await scanVehicle(elm, await readSupportedPids(elm));
+    expect(scan.monitorTests).toHaveLength(protocol === '6' ? 5 : 2);
+    expect(scan.monitorTestsExpected).toBe(scan.monitorTests.length);
+    expect(scan.snapshotRaw?.rpm).toMatch(/^ECU (7E8|10): [0-9A-F]{2} [0-9A-F]{2}$/);
+    expect(scan.freezeFrame?.raw?.coolant_temp).toMatch(/^ECU (7E8|10): [0-9A-F]{2}$/);
+  });
+
+  it('keeps signals through an ignition-off spell without hammering the adapter', async () => {
+    const { elm, transport } = await connect();
+    const poller = new Poller(elm);
+    const samples: Sample[] = [];
+    poller.onSample = (s) => samples.push(s);
+    poller.setSignals([SIGNAL_BY_ID.get('rpm')!, SIGNAL_BY_ID.get('battery_voltage')!]);
+    poller.start();
+    await new Promise((r) => setTimeout(r, 40));
+    transport.ignitionOff = true;
+    samples.length = 0;
+    await new Promise((r) => setTimeout(r, 120));
+    // Battery voltage is a slow signal: it must not fill the silence.
+    expect(samples.filter((s) => s.signalId === 'battery_voltage').length).toBeLessThanOrEqual(1);
+    expect(codesWereRead(await readTroubleCodes(elm))).toBe(false);
+    transport.ignitionOff = false;
+    samples.length = 0;
+    await new Promise((r) => setTimeout(r, 60));
+    await poller.stop();
+    expect(samples.some((s) => s.signalId === 'rpm')).toBe(true);
+    expect(codesWereRead(await readTroubleCodes(elm))).toBe(true);
   });
 
   it('has no freeze frame once codes are cleared', async () => {
@@ -242,6 +288,26 @@ describe('exports', () => {
       '1.5,rpm,1000,rpm,0FA0',
       '',
     ]);
+  });
+
+  it('says "not read" when the end-of-session read got no answer', () => {
+    const silent = { stored: [], pending: [], status: null, readAt: 0 };
+    for (const endCodes of [null, silent]) {
+      const s = { ...session, endCodes };
+      expect(toSummary(s, samples, 'metric')).toContain('Not read: the vehicle had stopped answering');
+      expect(toLongCsv(s, samples, 'metric')).toContain('# codes at end: not read');
+    }
+    expect(toSummary(session, samples, 'metric')).not.toContain('At the end of the session');
+  });
+
+  it('names manufacturer self-tests for vehicles it knows, and flags missing ones', () => {
+    const legacy = { monitor: 'Test $03', test: 'Component $02', value: 26, min: 32, max: null, unitId: null, passed: false, raw: '03 82 00 1A 00 20' };
+    const s = { ...session, scan: { ...session.scan!, monitorTests: [legacy], monitorTestsExpected: 7 } };
+    const text = toSummary(s, samples, 'metric');
+    expect(text).toContain('| Catalyst, bank 2 (Test $03) | Component $02 | 26 | 32 |');
+    expect(text).toContain('Incomplete: 6 more tests did not answer');
+    const other = { ...s, vehicle: { ...s.vehicle, vin: '1FTFW1ET5DFC10312' } };
+    expect(toSummary(other, samples, 'metric')).toContain('| Test $03 | Component $02 |');
   });
 
   it('writes a summary with codes and statistics', () => {

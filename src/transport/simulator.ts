@@ -9,6 +9,8 @@ export interface SimulatorOptions {
   replyCount?: boolean;
   /** A stored code on the pretend transmission computer, which otherwise has no codes. */
   transmissionCode?: string;
+  /** Makes each self-test (service 06) request go unanswered the first time, like a busy engine computer. */
+  flakySelfTests?: boolean;
   /** Seconds of simulated driving elapsed; injectable for tests. */
   clock?: () => number;
 }
@@ -71,6 +73,11 @@ export class SimulatorTransport implements Transport {
   private readonly latencyMs: number;
   private readonly clock: () => number;
   private readonly replyCount: boolean;
+  private lastCount = 0;
+  private readonly flakySelfTests: boolean;
+  private readonly askedOnce = new Set<string>();
+  /** True imitates ignition off: the adapter still answers, the vehicle doesn't. */
+  ignitionOff = false;
   private open_ = false;
   private echo = true;
   private headers = false;
@@ -87,6 +94,7 @@ export class SimulatorTransport implements Transport {
     this.protocol = options.protocol ?? '6';
     this.latencyMs = options.latencyMs ?? 40;
     this.replyCount = options.replyCount ?? true;
+    this.flakySelfTests = options.flakySelfTests ?? false;
     this.transmissionStored = options.transmissionCode ? [options.transmissionCode] : [];
     const t0 = Date.now();
     this.clock = options.clock ?? (() => (Date.now() - t0) / 1000);
@@ -123,12 +131,20 @@ export class SimulatorTransport implements Transport {
     // An odd digit count means the last digit is "expect this many replies".
     const counted = cmd.length % 2 !== 0;
     if (counted && !this.replyCount) return '?';
-    if (counted) cmd = cmd.slice(0, -1);
+    if (counted) {
+      this.lastCount = parseInt(cmd.slice(-1), 16);
+      cmd = cmd.slice(0, -1);
+    }
+    if (this.ignitionOff) return 'NO DATA';
+    if (this.flakySelfTests && /^06(?!.0)/.test(cmd) && !this.askedOnce.has(cmd)) {
+      this.askedOnce.add(cmd);
+      return 'NO DATA';
+    }
     const prefix = this.searched ? '' : 'SEARCHING...\r';
     this.searched = true;
     const service = parseInt(cmd.slice(0, 2), 16);
     const pid = cmd.length >= 4 ? parseInt(cmd.slice(2, 4), 16) : -1;
-    const replies = this.respond(service, pid, counted);
+    const replies = this.respond(service, pid, counted && this.lastCount === 1);
     return prefix + (replies.length ? replies.join('\r') : 'NO DATA');
   }
 

@@ -6,9 +6,24 @@ const hex2 = (n: number) => n.toString(16).toUpperCase().padStart(2, '0');
 
 /** Finds the reply to a service 01 PID request and returns its data bytes. */
 export function pidData(messages: Message[], pid: number): number[] | null {
-  // More than one ECU may answer; the engine computer replies first.
-  const m = messages.find((msg) => msg.data[0] === 0x41 && msg.data[1] === pid);
+  const m = engineFirst(messages).find((msg) => msg.data[0] === 0x41 && msg.data[1] === pid);
   return m ? m.data.slice(2) : null;
+}
+
+/**
+ * More than one computer may answer a request, in no guaranteed order, and
+ * they don't always agree (a transmission computer can report its own idea
+ * of a value). The engine computer has the lowest address on every bus
+ * (7E8 on CAN, 10 on the older ones), so sort it to the front.
+ */
+export function engineFirst(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => parseInt(a.ecu, 16) - parseInt(b.ecu, 16));
+}
+
+export interface PidSupport {
+  pids: Set<number>;
+  /** How many computers answer each PID. */
+  responders: Map<number, number>;
 }
 
 /**
@@ -17,7 +32,12 @@ export function pidData(messages: Message[], pid: number): number[] | null {
  * the next mask exists.
  */
 export async function readSupportedPids(elm: Elm327): Promise<Set<number>> {
+  return (await readPidSupport(elm)).pids;
+}
+
+export async function readPidSupport(elm: Elm327): Promise<PidSupport> {
   const supported = new Set<number>();
+  const responders = new Map<number, number>();
   for (let base = 0; base <= 0xc0; base += 0x20) {
     const messages = await elm.obd('01' + hex2(base));
     let more = false;
@@ -27,13 +47,14 @@ export async function readSupportedPids(elm: Elm327): Promise<Set<number>> {
         const byte = data[2 + (i >> 3)] ?? 0;
         if (byte & (0x80 >> (i & 7))) {
           supported.add(base + i + 1);
+          responders.set(base + i + 1, (responders.get(base + i + 1) ?? 0) + 1);
           if (i === 31) more = true;
         }
       }
     }
     if (!more) break;
   }
-  return supported;
+  return { pids: supported, responders };
 }
 
 /** Reads the VIN (service 09 PID 02). Many pre-2005 vehicles don't report one. */
@@ -67,17 +88,52 @@ export interface TroubleCodes {
   status: MonitorStatus | null;
   /** Distance driven with the check-engine light on, if the vehicle reports it. */
   milDistanceKm?: number | null;
+  /** The bytes that distance was decoded from, per answering computer. */
+  milDistanceRaw?: string;
+  /**
+   * False when the vehicle didn't answer at all (ignition off), which is not
+   * the same as answering "no codes". Absent in older logs.
+   */
+  answered?: boolean;
   readAt: number;
 }
 
 export async function readTroubleCodes(elm: Elm327): Promise<TroubleCodes> {
   const status = await readMonitorStatus(elm);
-  const stored = parseDtcs(await elm.obd('03'), 0x03, elm.bus);
+  const storedReply = await elm.obd('03');
+  const stored = parseDtcs(storedReply, 0x03, elm.bus);
   const pending = parseDtcs(await elm.obd('07'), 0x07, elm.bus);
   const permanent = await elm.obd('0A').then((m) => parseDtcs(m, 0x0a, elm.bus)).catch(() => []);
-  const distance = await elm.obd('0121').then((m) => pidData(m, 0x21)).catch(() => null);
+  const distanceReply = await elm.obd('0121').catch(() => []);
+  const distance = pidData(distanceReply, 0x21);
   const milDistanceKm = distance && distance.length >= 2 ? distance[0]! * 256 + distance[1]! : null;
-  return { stored, pending, permanent, status, milDistanceKm, readAt: Date.now() };
+  return {
+    stored,
+    pending,
+    permanent,
+    status,
+    milDistanceKm,
+    milDistanceRaw: rawByEcu(distanceReply, 0x01, 0x21),
+    answered: status !== null || storedReply.some((m) => m.data[0] === 0x43),
+    readAt: Date.now(),
+  };
+}
+
+/** Whether a code read got an answer, including for logs saved before `answered` existed. */
+export function codesWereRead(codes: TroubleCodes | null | undefined): codes is TroubleCodes {
+  if (!codes) return false;
+  return codes.answered ?? (codes.status !== null || codes.stored.length > 0 || codes.pending.length > 0);
+}
+
+/**
+ * The data bytes of every reply to a request, labelled by which computer
+ * sent them, e.g. "ECU 10: 00 0B". Disagreeing computers show up here.
+ */
+export function rawByEcu(messages: Message[], service: number, id: number, skip = 2): string {
+  return engineFirst(messages)
+    .filter((m) => m.data[0] === service + 0x40 && m.data[1] === id)
+    .map((m) => `ECU ${m.ecu}: ${m.data.slice(skip).map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}`)
+    .join('; ');
 }
 
 /**

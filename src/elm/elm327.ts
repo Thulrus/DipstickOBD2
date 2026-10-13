@@ -117,10 +117,11 @@ export class Elm327 {
    * Normally the adapter waits out a timeout after each reply in case another
    * computer answers too, which dominates the time per request. A trailing
    * digit tells it how many replies to expect so it can return at once.
+   * `replies` is how many computers answer this request (usually one).
    * Adapters that don't understand the digit are detected in `init`.
    */
-  obdSingle(request: string): Promise<Message[]> {
-    return this.obd(this.replyCount ? request + '1' : request);
+  obdSingle(request: string, replies = 1): Promise<Message[]> {
+    return this.obd(this.replyCount && replies >= 1 && replies <= 9 ? request + replies : request);
   }
 
   /** Resets and configures the adapter, then finds the vehicle's protocol. */

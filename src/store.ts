@@ -8,7 +8,7 @@ import { ADAPTER_VOLTAGE_PID, DEFAULT_SIGNAL_IDS, SIGNALS, type Signal } from '.
 import { defaultUnitSystem, type UnitSystem } from './obd/units';
 import { scanModules, type ModuleScan } from './obd/modules';
 import { scanVehicle, type VehicleScan } from './obd/scan';
-import { clearTroubleCodes, readSupportedPids, readTroubleCodes, readVin, type TroubleCodes } from './obd/vehicle';
+import { clearTroubleCodes, codesWereRead, readPidSupport, readTroubleCodes, readVin, type TroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
 import type { Transport } from './transport/types';
 import { WebSerialTransport } from './transport/webSerial';
@@ -34,6 +34,8 @@ interface State {
   disconnecting: boolean;
   /** Markers added to the session being recorded. */
   markers: Marker[];
+  /** Odometer typed in for the session being recorded. */
+  odometer: string;
   /** What the connect sequence is doing right now. */
   step: string;
   error: string | null;
@@ -90,6 +92,7 @@ export const useApp = create<State>(() => ({
   status: 'idle',
   disconnecting: false,
   markers: [],
+  odometer: '',
   step: '',
   error: null,
   pickerDismissed: false,
@@ -230,7 +233,7 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     const adapter = await driver.init((step) => set({ step }));
     set({ step: 'Reading vehicle information' });
     const vin = await readVin(driver).catch(() => null);
-    const pids = await readSupportedPids(driver);
+    const { pids, responders } = await readPidSupport(driver);
     const available = SIGNALS.filter((s) => (s.pid === ADAPTER_VOLTAGE_PID ? adapter.voltage !== null : pids.has(s.pid)));
     const codes = await readTroubleCodes(driver).catch(() => null);
 
@@ -253,9 +256,10 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     void requestPersistence();
 
     supportedPids = pids;
-    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, modules: null, live: {}, markers: [], sessionId: session.id });
+    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, modules: null, live: {}, markers: [], odometer: '', sessionId: session.id });
     poller = new Poller(driver);
     poller.onSample = onSample;
+    poller.setResponders(responders);
     poller.onError = (e) => void cleanup(describe(e));
     poller.setSignals(pollable());
     poller.start();
@@ -302,11 +306,19 @@ export async function disconnect(): Promise<void> {
   try {
     await p?.stop();
     const endCodes = await Promise.race([readTroubleCodes(driver), new Promise<null>((res) => setTimeout(() => res(null), 8000))]);
-    if (endCodes && recorder === r) r?.update({ endCodes });
+    // Null records "tried, but the vehicle had stopped answering" (ignition
+    // already off), so exports can say "not read" instead of "no codes".
+    if (recorder === r) r?.update({ endCodes: codesWereRead(endCodes) ? endCodes : null });
   } catch {
     /* the vehicle may already be off; the rest of the log is still good */
   }
   await cleanup(null);
+}
+
+/** Saves the odometer reading for the session being recorded. */
+export function setOdometer(odometer: string): void {
+  recorder?.update({ odometer: odometer.trim() });
+  set({ odometer: odometer.trim() });
 }
 
 export function addMarker(label: string): void {
