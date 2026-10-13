@@ -15,6 +15,7 @@ export function App() {
   const tab = useApp((s) => s.tab);
   const status = useApp((s) => s.status);
   const demo = useApp((s) => s.demo);
+  const disconnecting = useApp((s) => s.disconnecting);
   const error = useApp((s) => s.error);
   const stored = useApp((s) => s.codes?.stored.length ?? 0);
 
@@ -28,8 +29,8 @@ export function App() {
               <span className="dot" aria-hidden="true" />
               {demo ? 'Demo vehicle' : 'Connected'}
             </span>
-            <button className="quiet" onClick={() => void disconnect()}>
-              Disconnect
+            <button className="quiet" disabled={disconnecting} onClick={() => void disconnect()}>
+              {disconnecting ? 'Saving…' : 'Disconnect'}
             </button>
           </>
         )}

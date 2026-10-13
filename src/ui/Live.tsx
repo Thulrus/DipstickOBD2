@@ -1,7 +1,8 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
+import { PROFILES } from '../obd/profiles';
 import { SIGNAL_BY_ID, type Signal } from '../obd/signals';
 import { displayUnit, formatValue } from '../obd/units';
-import { togglePin, toggleSignal, useApp, type LiveValue } from '../store';
+import { addMarker, selectSignals, togglePin, toggleSignal, useApp, type LiveValue } from '../store';
 import { ConnectPanel } from './ConnectPanel';
 
 export function Live() {
@@ -13,7 +14,16 @@ export function Live() {
   const rate = useApp((s) => s.samplesPerSecond);
   const pinned = useApp((s) => s.pinned);
   const screenAwake = useApp((s) => s.screenAwake);
+  const markers = useApp((s) => s.markers);
   const picker = useRef<HTMLDialogElement>(null);
+  const marker = useRef<HTMLDialogElement>(null);
+  const [markerText, setMarkerText] = useState('');
+
+  function mark(label: string) {
+    addMarker(label);
+    setMarkerText('');
+    marker.current?.close();
+  }
 
   if (status !== 'connected') {
     return (
@@ -34,6 +44,9 @@ export function Live() {
   // Pinned tiles keep the order they were pinned in.
   const big = pinned.flatMap((id) => shown.filter((s) => s.id === id));
   const rest = shown.filter((s) => !pinned.includes(s.id));
+  // Slow signals take only an occasional turn, so the fast ones set the pace.
+  const fastCount = shown.filter((s) => s.rate === 'fast').length;
+  const cycle = rate > 0 && fastCount > 0 ? fastCount / rate : null;
 
   return (
     <>
@@ -44,8 +57,12 @@ export function Live() {
           {vin ?? 'VIN not reported'} · {adapter?.protocolName}
           <br />
           {screenAwake ? 'Screen will stay on' : 'Screen may turn off'}
+          {markers.length > 0 && ` · ${markers.length} marker${markers.length === 1 ? '' : 's'}`}
         </p>
-        <button onClick={() => picker.current?.showModal()}>Signals</button>
+        <div className="stack">
+          <button onClick={() => picker.current?.showModal()}>Signals</button>
+          <button onClick={() => marker.current?.showModal()}>Mark</button>
+        </div>
       </div>
 
       {shown.length === 0 ? (
@@ -76,7 +93,15 @@ export function Live() {
           <p className="note">
             Your vehicle reports {available.length} signals. The ones you pick are shown and logged. The adapter reads one at a time, so
             fewer signals means faster updates for each.
+            {cycle !== null && ` With this selection, fast-changing signals update about every ${cycle.toFixed(1)} s.`}
           </p>
+          <div className="row">
+            {PROFILES.map((p) => (
+              <button key={p.name} type="button" title={p.hint} onClick={() => selectSignals(p.pick(available))}>
+                {p.name}
+              </button>
+            ))}
+          </div>
           <ul>
             {available.map((s) => (
               <li key={s.id}>
@@ -89,9 +114,45 @@ export function Live() {
           </ul>
         </form>
       </dialog>
+
+      <dialog ref={marker} className="picker" onClick={(e) => e.target === marker.current && marker.current.close()}>
+        <form
+          method="dialog"
+          onSubmit={(e) => {
+            if (markerText.trim()) {
+              e.preventDefault();
+              mark(markerText);
+            }
+          }}
+        >
+          <header>
+            <h2>Add a marker</h2>
+            <button type="button" className="quiet" onClick={() => marker.current?.close()}>
+              Cancel
+            </button>
+          </header>
+          <p className="note">Stamps the log at this moment with something the vehicle can't report, so the data can be read in context.</p>
+          <div className="row">
+            {QUICK_MARKERS.map((label) => (
+              <button key={label} type="button" onClick={() => mark(label)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <label className="field">
+            Or type your own
+            <input type="text" value={markerText} onChange={(e) => setMarkerText(e.target.value)} placeholder="e.g. hesitation going uphill" />
+          </label>
+          <button className="primary" disabled={!markerText.trim()}>
+            Add marker
+          </button>
+        </form>
+      </dialog>
     </>
   );
 }
+
+const QUICK_MARKERS = ['In Park, idling', 'In Drive, stopped', 'Holding 2,500 rpm', 'Cruising', 'A/C on', 'A/C off', 'Problem happening now'];
 
 function Tile({ signal, pinned = false }: { signal: Signal; pinned?: boolean }) {
   const value = useApp((s) => s.live[signal.id]);
@@ -108,13 +169,17 @@ function Tile({ signal, pinned = false }: { signal: Signal; pinned?: boolean }) 
         {pinned ? '★' : '☆'}
       </button>
       <h3>{signal.name}</h3>
-      <p className="value">
-        {value ? formatValue(signal, value.v, units) : '–'}
-        {unit && <span className="unit"> {unit}</span>}
-      </p>
+      {signal.states ? (
+        <p className="value state">{value ? (signal.states[value.v] ?? `State ${value.v}`) : '–'}</p>
+      ) : (
+        <p className="value">
+          {value ? formatValue(signal, value.v, units) : '–'}
+          {unit && <span className="unit"> {unit}</span>}
+        </p>
+      )}
       <Sparkline value={value} />
       <p className="range">
-        {value ? `${formatValue(signal, value.min, units)} to ${formatValue(signal, value.max, units)}` : 'Waiting for data'}
+        {!value ? 'Waiting for data' : signal.states ? `Code ${value.v}` : `${formatValue(signal, value.min, units)} to ${formatValue(signal, value.max, units)}`}
       </p>
     </article>
   );

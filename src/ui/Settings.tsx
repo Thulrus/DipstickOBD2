@@ -42,6 +42,8 @@ export function Settings() {
             <dd>{adapter.version}</dd>
             <dt>Vehicle protocol</dt>
             <dd>{adapter.protocolName}</dd>
+            <dt>Fast replies</dt>
+            <dd>{adapter.fastReplies ? 'Supported' : 'Not supported by this adapter'}</dd>
             <dt>Battery at connect</dt>
             <dd>{adapter.voltage === null ? 'Not reported' : `${adapter.voltage.toFixed(1)} V`}</dd>
           </dl>

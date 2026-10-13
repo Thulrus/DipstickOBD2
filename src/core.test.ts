@@ -7,7 +7,7 @@ import { decodeDtc, decodeMonitorStatus, parseDtcs } from './obd/dtc';
 import { pickNext, Poller, SLOW_INTERVAL_MS, type Sample } from './obd/poller';
 import { SIGNAL_BY_ID, SIGNALS } from './obd/signals';
 import { scanVehicle } from './obd/scan';
-import { readSupportedPids, readTroubleCodes, readVin, clearTroubleCodes } from './obd/vehicle';
+import { pidData, readSupportedPids, readTroubleCodes, readVin, clearTroubleCodes } from './obd/vehicle';
 import { SimulatorTransport } from './transport/simulator';
 
 describe('parseResponse', () => {
@@ -97,6 +97,7 @@ describe.each(['6', '3'] as const)('against the simulator (protocol %s)', (proto
     expect(info.version).toBe('ELM327 v1.5');
     expect(info.protocol).toBe(protocol);
     expect(info.voltage).toBeGreaterThan(12);
+    expect(info.fastReplies).toBe(true);
     expect(await readVin(elm)).toBe('1N6AD07W05C400000');
     const pids = await readSupportedPids(elm);
     expect(pids.has(0x0c)).toBe(true);
@@ -133,12 +134,12 @@ describe.each(['6', '3'] as const)('against the simulator (protocol %s)', (proto
       expect(scan.monitorTests).toHaveLength(5);
       const failed = scan.monitorTests.filter((t) => !t.passed);
       expect(failed).toEqual([
-        { monitor: 'Misfire, cylinder 1', test: 'Misfire count, this or last drive cycle', value: 65, min: 0, max: 32, unitId: '24', passed: false },
+        { monitor: 'Misfire, cylinder 1', test: 'Misfire count, this or last drive cycle', value: 65, min: 0, max: 32, unitId: '24', passed: false, raw: 'A2 0C 24 00 41 00 00 00 20' },
       ]);
     } else {
       expect(scan.monitorTests).toEqual([
-        { monitor: 'Test $01', test: 'Component $01', value: 82, min: 48, max: null, unitId: null, passed: true },
-        { monitor: 'Test $02', test: 'Component $01', value: 400, min: null, max: 256, unitId: null, passed: false },
+        { monitor: 'Test $01', test: 'Component $01', value: 82, min: 48, max: null, unitId: null, passed: true, raw: '01 81 00 52 00 30' },
+        { monitor: 'Test $02', test: 'Component $01', value: 400, min: null, max: 256, unitId: null, passed: false, raw: '02 01 01 90 01 00' },
       ]);
     }
   });
@@ -163,6 +164,28 @@ describe.each(['6', '3'] as const)('against the simulator (protocol %s)', (proto
     const rpm = samples.find((s) => s.signalId === 'rpm')!.v;
     expect(rpm).toBeGreaterThan(600);
     expect(rpm).toBeLessThan(4000);
+  });
+
+  it('falls back when the adapter rejects reply counts', async () => {
+    const transport = new SimulatorTransport({ protocol, latencyMs: 1, replyCount: false, clock: () => 300 });
+    await transport.open();
+    const elm = new Elm327(transport);
+    expect((await elm.init()).fastReplies).toBe(false);
+    expect(pidData(await elm.obdSingle('010C'), 0x0c)).toHaveLength(2);
+  });
+
+  it('records the raw bytes behind each value', async () => {
+    const { elm } = await connect();
+    const poller = new Poller(elm);
+    const samples: Sample[] = [];
+    poller.onSample = (s) => samples.push(s);
+    poller.setSignals([SIGNAL_BY_ID.get('rpm')!, SIGNAL_BY_ID.get('fuel_system_status')!]);
+    poller.start();
+    await new Promise((r) => setTimeout(r, 40));
+    await poller.stop();
+    const rpm = samples.find((s) => s.signalId === 'rpm')!;
+    expect(parseInt(rpm.raw, 16) / 4).toBe(rpm.v);
+    expect(samples.find((s) => s.signalId === 'fuel_system_status')).toMatchObject({ v: 2, raw: '0200' });
   });
 
   it('fails in-flight requests when the adapter drops', async () => {
@@ -192,21 +215,30 @@ describe('exports', () => {
       snapshot: { fuel_level: 50 },
       monitorTests: [{ monitor: 'Catalyst bank 1', test: 'Test $80', value: 72, min: 0, max: 96, unitId: '20', passed: true }],
     },
+    markers: [{ t: 1200, label: 'A/C on' }],
+    odometer: '113,204',
     note: '',
   };
-  const samples: SampleColumns = { t: [100, 300, 600, 1500], k: [0, 1, 0, 0], v: [800, 90, 900, 1000] };
+  const samples: SampleColumns = { t: [100, 300, 600, 1500], k: [0, 1, 0, 0], v: [800, 90, 900, 1000], r: ['0C80', '82', '0E10', '0FA0'] };
+  /** The CSV without its leading comment lines. */
+  const data = (csv: string) => csv.split('\n').filter((l) => !l.startsWith('#'));
 
   it('writes a wide CSV with averaged buckets and honest gaps', () => {
-    expect(toWideCsv(session, samples, 'imperial')).toBe('time_s,rpm (rpm),coolant_temp (°F)\n0,850,194\n1,1000,\n');
+    const csv = toWideCsv(session, samples, 'imperial');
+    expect(data(csv)).toEqual(['time_s,rpm (rpm),coolant_temp (°F),marker', '0,850,194,', '1,1000,,A/C on', '']);
+    expect(csv).toContain('# odometer: 113,204');
+    expect(csv).toContain('# marker at 1.2 s: A/C on');
+    expect(csv).toContain('# codes at start: stored=P0174 pending=none check_engine_light=on');
   });
 
   it('writes a long CSV with every reading', () => {
-    expect(toLongCsv(session, samples, 'metric').split('\n')).toEqual([
-      'time_s,signal,value,unit',
-      '0.1,rpm,800,rpm',
-      '0.3,coolant_temp,90,°C',
-      '0.6,rpm,900,rpm',
-      '1.5,rpm,1000,rpm',
+    expect(data(toLongCsv(session, samples, 'metric'))).toEqual([
+      'time_s,signal,value,unit,raw_hex',
+      '0.1,rpm,800,rpm,0C80',
+      '0.3,coolant_temp,90,°C,82',
+      '0.6,rpm,900,rpm,0E10',
+      '1.2,marker,A/C on,,',
+      '1.5,rpm,1000,rpm,0FA0',
       '',
     ]);
   });
@@ -220,6 +252,8 @@ describe('exports', () => {
     expect(text).toContain('| Coolant temperature | 90 | °C |');
     expect(text).toContain('| Fuel level | 50 | % |');
     expect(text).toContain('| Catalyst bank 1 | Test $80 | 72 | 0 | 96 | 20 | Pass |');
+    expect(text).toContain('- 1.2 s: A/C on');
+    expect(text).toContain('- Odometer: 113,204');
     expect(JSON.parse(toJson(session, samples, 'metric')).scan.freezeFrame.triggeredBy).toBe('P0174');
     expect(text).toContain('| Engine speed | rpm | 800 | 900 | 1000 | 800 | 1000 | 3 |');
   });

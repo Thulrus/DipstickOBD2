@@ -65,6 +65,8 @@ export interface TroubleCodes {
    */
   permanent?: string[];
   status: MonitorStatus | null;
+  /** Distance driven with the check-engine light on, if the vehicle reports it. */
+  milDistanceKm?: number | null;
   readAt: number;
 }
 
@@ -73,7 +75,9 @@ export async function readTroubleCodes(elm: Elm327): Promise<TroubleCodes> {
   const stored = parseDtcs(await elm.obd('03'), 0x03, elm.bus);
   const pending = parseDtcs(await elm.obd('07'), 0x07, elm.bus);
   const permanent = await elm.obd('0A').then((m) => parseDtcs(m, 0x0a, elm.bus)).catch(() => []);
-  return { stored, pending, permanent, status, readAt: Date.now() };
+  const distance = await elm.obd('0121').then((m) => pidData(m, 0x21)).catch(() => null);
+  const milDistanceKm = distance && distance.length >= 2 ? distance[0]! * 256 + distance[1]! : null;
+  return { stored, pending, permanent, status, milDistanceKm, readAt: Date.now() };
 }
 
 /**

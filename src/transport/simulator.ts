@@ -5,6 +5,8 @@ export interface SimulatorOptions {
   protocol?: '6' | '3';
   /** Delay before each reply. Real adapters take roughly 30-150 ms. */
   latencyMs?: number;
+  /** Set false to imitate a clone that rejects the reply-count digit. */
+  replyCount?: boolean;
   /** Seconds of simulated driving elapsed; injectable for tests. */
   clock?: () => number;
 }
@@ -51,6 +53,7 @@ export class SimulatorTransport implements Transport {
   private readonly protocol: '6' | '3';
   private readonly latencyMs: number;
   private readonly clock: () => number;
+  private readonly replyCount: boolean;
   private open_ = false;
   private echo = true;
   private headers = false;
@@ -63,6 +66,7 @@ export class SimulatorTransport implements Transport {
   constructor(options: SimulatorOptions = {}) {
     this.protocol = options.protocol ?? '6';
     this.latencyMs = options.latencyMs ?? 40;
+    this.replyCount = options.replyCount ?? true;
     const t0 = Date.now();
     this.clock = options.clock ?? (() => (Date.now() - t0) / 1000);
   }
@@ -94,12 +98,16 @@ export class SimulatorTransport implements Transport {
   private handle(cmd: string): string {
     if (cmd === '') return '';
     if (cmd.startsWith('AT')) return this.at(cmd.slice(2));
-    if (!/^[0-9A-F]+$/.test(cmd) || cmd.length % 2 !== 0) return '?';
+    if (!/^[0-9A-F]+$/.test(cmd)) return '?';
+    // An odd digit count means the last digit is "expect this many replies".
+    const counted = cmd.length % 2 !== 0;
+    if (counted && !this.replyCount) return '?';
+    if (counted) cmd = cmd.slice(0, -1);
     const prefix = this.searched ? '' : 'SEARCHING...\r';
     this.searched = true;
     const service = parseInt(cmd.slice(0, 2), 16);
     const pid = cmd.length >= 4 ? parseInt(cmd.slice(2, 4), 16) : -1;
-    const replies = this.respond(service, pid);
+    const replies = this.respond(service, pid, counted);
     return prefix + (replies.length ? replies.join('\r') : 'NO DATA');
   }
 
@@ -123,12 +131,12 @@ export class SimulatorTransport implements Transport {
   }
 
   /** Formats one or more ECU payloads the way the selected bus would. */
-  private respond(service: number, pid: number): string[] {
+  private respond(service: number, pid: number, firstOnly: boolean): string[] {
     const lines: string[] = [];
     const engine = this.payloads(service, pid);
     for (const payload of engine) lines.push(...this.frame(payload, '7E8', 0x10));
     // A transmission computer that only answers the "what do you support" query.
-    if (service === 0x01 && pid === 0x00) lines.push(...this.frame([0x41, 0x00, 0x80, 0x00, 0x00, 0x00], '7E9', 0x18));
+    if (service === 0x01 && pid === 0x00 && !firstOnly) lines.push(...this.frame([0x41, 0x00, 0x80, 0x00, 0x00, 0x00], '7E9', 0x18));
     return lines;
   }
 

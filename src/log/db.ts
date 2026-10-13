@@ -51,13 +51,14 @@ export async function getSession(id: string): Promise<Session | undefined> {
 
 export async function loadSamples(sessionId: string): Promise<SampleColumns> {
   const chunks = await (await db()).getAll('chunks', chunkRange(sessionId));
-  const out: SampleColumns = { t: [], k: [], v: [] };
+  const out: Required<SampleColumns> = { t: [], k: [], v: [], r: [] };
   for (const c of chunks) {
     // Not push(...c.t): spreading a large array can overflow the stack.
     for (let i = 0; i < c.t.length; i++) {
       out.t.push(c.t[i]!);
       out.k.push(c.k[i]!);
       out.v.push(c.v[i]!);
+      out.r.push(c.r?.[i] ?? '');
     }
   }
   return out;

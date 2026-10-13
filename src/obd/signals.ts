@@ -22,6 +22,8 @@ export interface Signal {
   rate: 'fast' | 'slow';
   /** Data bytes needed after the PID byte. */
   bytes: number;
+  /** For signals that are a state rather than a quantity: what each value means. */
+  states?: Record<number, string>;
   decode(a: number, b: number, c: number, d: number): number;
 }
 
@@ -81,6 +83,18 @@ export const SIGNALS: Signal[] = [
   def({ id: 'ltft_b1', pid: 0x07, name: 'Long-term fuel trim B1', unit: '%', min: -25, max: 25, decimals: 1, bytes: 1, decode: trim }),
   def({ id: 'stft_b2', pid: 0x08, name: 'Short-term fuel trim B2', unit: '%', min: -25, max: 25, decimals: 1, rate: 'fast', bytes: 1, decode: trim }),
   def({ id: 'ltft_b2', pid: 0x09, name: 'Long-term fuel trim B2', unit: '%', min: -25, max: 25, decimals: 1, bytes: 1, decode: trim }),
+  def({
+    id: 'fuel_system_status',
+    pid: 0x03,
+    name: 'Fuel system status',
+    unit: 'count',
+    min: 0,
+    max: 16,
+    bytes: 2,
+    decode: (a) => a,
+    // Trims only mean something in closed loop; this is how a log reader knows.
+    states: { 1: 'Open loop (cold)', 2: 'Closed loop', 4: 'Open loop (load/decel)', 8: 'Open loop (fault)', 16: 'Closed loop (fault)' },
+  }),
   def({ id: 'coolant_temp', pid: 0x05, name: 'Coolant temperature', unit: '°C', min: -40, max: 130, bytes: 1, decode: temp }),
   def({ id: 'intake_temp', pid: 0x0f, name: 'Intake air temperature', unit: '°C', min: -40, max: 80, bytes: 1, decode: temp }),
   def({ id: 'fuel_pressure', pid: 0x0a, name: 'Fuel pressure', unit: 'kPa', min: 0, max: 765, bytes: 1, decode: (a) => a * 3 }),

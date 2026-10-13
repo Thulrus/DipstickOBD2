@@ -10,7 +10,7 @@ const FLUSH_INTERVAL_MS = 3000;
  * loses at most the last few seconds.
  */
 export class Recorder {
-  private buffer: SampleColumns = { t: [], k: [], v: [] };
+  private buffer: Required<SampleColumns> = { t: [], k: [], v: [], r: [] };
   private seq = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private writing: Promise<void> = Promise.resolve();
@@ -32,20 +32,28 @@ export class Recorder {
     this.buffer.t.push(sample.t);
     this.buffer.k.push(k);
     this.buffer.v.push(sample.v);
+    this.buffer.r.push(sample.raw);
     this.session.sampleCount++;
     this.session.endedAt = this.session.startedAt + sample.t;
   }
 
   /** Saves a change to the session record itself (codes, note). */
-  update(change: Partial<Pick<Session, 'codes' | 'scan' | 'note'>>): void {
+  update(change: Partial<Pick<Session, 'codes' | 'scan' | 'endCodes' | 'note'>>): void {
     Object.assign(this.session, change);
+    this.writing = this.writing.then(() => putSession({ ...this.session })).catch(() => {});
+  }
+
+  /** Stamps the log with something the driver noticed or did. */
+  addMarker(label: string): void {
+    const markers = [...(this.session.markers ?? []), { t: Date.now() - this.session.startedAt, label }];
+    this.session.markers = markers;
     this.writing = this.writing.then(() => putSession({ ...this.session })).catch(() => {});
   }
 
   flush(): Promise<void> {
     if (this.buffer.t.length === 0) return this.writing;
     const samples = this.buffer;
-    this.buffer = { t: [], k: [], v: [] };
+    this.buffer = { t: [], k: [], v: [], r: [] };
     const seq = this.seq++;
     const snapshot = { ...this.session, signalIds: [...this.session.signalIds] };
     this.writing = this.writing.then(() => appendChunk(snapshot, seq, samples)).catch(() => {});

@@ -23,7 +23,19 @@ export interface Session {
   codes: TroubleCodes | null;
   /** Freeze frame, self-test results and a full snapshot, if they were read. */
   scan?: VehicleScan | null;
+  /** Codes and light status read again just before disconnecting. */
+  endCodes?: TroubleCodes | null;
+  /** Things the vehicle can't report that the driver noted as they happened. */
+  markers?: Marker[];
+  /** Typed in by the user; most vehicles don't report it. */
+  odometer?: string;
   note: string;
+}
+
+export interface Marker {
+  /** Milliseconds since session start. */
+  t: number;
+  label: string;
 }
 
 /**
@@ -34,6 +46,8 @@ export interface SampleColumns {
   t: number[];
   k: number[];
   v: number[];
+  /** Raw data bytes (hex) behind each value. Absent in older logs. */
+  r?: string[];
 }
 
 export interface Series {

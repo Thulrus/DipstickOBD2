@@ -49,6 +49,7 @@ function SessionDetail({ session, onBack }: { session: Session; onBack: () => vo
   const recording = useApp((s) => s.sessionId === session.id);
   const [samples, setSamples] = useState<SampleColumns | null>(null);
   const [note, setNote] = useState(session.note);
+  const [odometer, setOdometer] = useState(session.odometer ?? '');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -58,7 +59,7 @@ function SessionDetail({ session, onBack }: { session: Session; onBack: () => vo
   const series = useMemo(() => (samples ? toSeries(session, samples) : []), [session, samples]);
   const stats = useMemo(() => (samples ? computeStats(session, samples, units) : []), [session, samples, units]);
   const durationMs = session.endedAt - session.startedAt;
-  const current = { ...session, note };
+  const current = { ...session, note, odometer };
 
   async function copySummary() {
     if (!samples) return;
@@ -106,6 +107,12 @@ function SessionDetail({ session, onBack }: { session: Session; onBack: () => vo
           <p className="note">Still recording. Showing what had been saved when you opened this page.</p>
         ) : (
           <label className="field">
+            Odometer
+            <input type="text" inputMode="numeric" value={odometer} placeholder="e.g. 113,204 mi" onChange={(e) => setOdometer(e.target.value)} onBlur={() => void putSession(current)} />
+          </label>
+        )}
+        {!recording && (
+          <label className="field">
             Note
             <textarea
               rows={2}
@@ -117,6 +124,20 @@ function SessionDetail({ session, onBack }: { session: Session; onBack: () => vo
           </label>
         )}
       </section>
+
+      {(session.markers?.length ?? 0) > 0 && (
+        <section className="card">
+          <h2>Markers</h2>
+          <ul className="monitors">
+            {session.markers!.map((m, i) => (
+              <li key={i}>
+                <span>{m.label}</span>
+                <span>{formatDuration(m.t)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="card">
         <h2>Export</h2>

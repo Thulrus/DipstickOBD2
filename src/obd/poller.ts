@@ -8,6 +8,8 @@ export interface Sample {
   signalId: string;
   /** Metric value, as decoded. */
   v: number;
+  /** The data bytes this value was decoded from, as hex. Empty if none. */
+  raw: string;
 }
 
 /** How often slow-changing signals (temperatures, long-term trims) are read. */
@@ -82,16 +84,16 @@ export class Poller {
         continue;
       }
       try {
-        const values = await this.read(slot);
+        const reading = await this.read(slot);
         const t = Math.round(this.now() - startedAt);
         slot.last = this.now();
         failures = 0;
-        if (!values) {
+        if (!reading) {
           if (++slot.misses >= MAX_MISSES) this.slots = this.slots.filter((s) => s !== slot);
           continue;
         }
         slot.misses = 0;
-        values.forEach((v, i) => this.onSample({ t, signalId: slot.signals[i]!.id, v }));
+        reading.values.forEach((v, i) => this.onSample({ t, signalId: slot.signals[i]!.id, v, raw: reading.raw }));
       } catch (e) {
         slot.last = this.now();
         // One-off glitches are normal on cheap adapters; a run of them isn't.
@@ -103,14 +105,17 @@ export class Poller {
     }
   }
 
-  private async read(slot: Slot): Promise<number[] | null> {
+  private async read(slot: Slot): Promise<{ values: number[]; raw: string } | null> {
     if (slot.pid === ADAPTER_VOLTAGE_PID) {
       const v = await this.elm.readVoltage();
-      return v === null ? null : [v];
+      return v === null ? null : { values: [v], raw: '' };
     }
     const request = '01' + slot.pid.toString(16).toUpperCase().padStart(2, '0');
-    const d = pidData(await this.elm.obd(request), slot.pid);
+    const d = pidData(await this.elm.obdSingle(request), slot.pid);
     if (!d || slot.signals.some((s) => d.length < s.bytes)) return null;
-    return slot.signals.map((s) => s.decode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0));
+    return {
+      values: slot.signals.map((s) => s.decode(d[0] ?? 0, d[1] ?? 0, d[2] ?? 0, d[3] ?? 0)),
+      raw: d.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join(''),
+    };
   }
 }

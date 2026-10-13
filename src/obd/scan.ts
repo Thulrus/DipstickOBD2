@@ -43,9 +43,12 @@ export interface MonitorTest {
   max: number | null;
   unitId: string | null;
   passed: boolean;
+  /** The record exactly as the vehicle sent it (hex), ids included. */
+  raw?: string;
 }
 
 const hex2 = (n: number) => n.toString(16).toUpperCase().padStart(2, '0');
+const hex = (bytes: number[]) => bytes.map(hex2).join(' ');
 const word = (hi: number | undefined, lo: number | undefined) => ((hi ?? 0) << 8) | (lo ?? 0);
 
 /** ORs together the "which ids do you support" bitmasks for one service. */
@@ -168,6 +171,7 @@ async function readMonitorTests(elm: Elm327): Promise<MonitorTest[]> {
           max: isMin ? null : limit,
           unitId: null,
           passed: isMin ? value >= limit : value <= limit,
+          raw: hex(data.slice(1, 7)),
         });
         continue;
       }
@@ -190,6 +194,7 @@ async function readMonitorTests(elm: Elm327): Promise<MonitorTest[]> {
           max,
           unitId: hex2(unit),
           passed: value >= min && value <= max,
+          raw: hex(data.slice(i, i + 9)),
         });
       }
     }

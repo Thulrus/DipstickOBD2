@@ -20,6 +20,8 @@ export interface AdapterInfo {
   bus: BusKind;
   /** Battery voltage as seen at the OBD port, if the adapter reports it. */
   voltage: number | null;
+  /** Whether the adapter accepts an expected-reply count (see `obdSingle`). */
+  fastReplies: boolean;
 }
 
 // Text the adapter prints instead of data when a request fails on the bus.
@@ -42,6 +44,7 @@ export class Elm327 {
   private pending: Pending | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private replyCount = false;
   bus: BusKind = 'can11';
 
   constructor(private readonly transport: Transport) {
@@ -109,6 +112,17 @@ export class Elm327 {
     return messages;
   }
 
+  /**
+   * Like `obd`, for requests where one reply is enough (live-data polling).
+   * Normally the adapter waits out a timeout after each reply in case another
+   * computer answers too, which dominates the time per request. A trailing
+   * digit tells it how many replies to expect so it can return at once.
+   * Adapters that don't understand the digit are detected in `init`.
+   */
+  obdSingle(request: string): Promise<Message[]> {
+    return this.obd(this.replyCount ? request + '1' : request);
+  }
+
   /** Resets and configures the adapter, then finds the vehicle's protocol. */
   async init(onStep?: (step: string) => void): Promise<AdapterInfo> {
     onStep?.('Resetting adapter');
@@ -142,6 +156,11 @@ export class Elm327 {
       );
     }
 
+    // Does this adapter honour a reply count? Clones answer "?" or garbage.
+    this.replyCount = await this.command('01001')
+      .then((lines) => parseResponse(lines, this.bus).some((m) => m.data[0] === 0x41 && m.data[1] === 0x00))
+      .catch(() => false);
+
     let voltage: number | null = null;
     try {
       voltage = await this.readVoltage();
@@ -154,6 +173,7 @@ export class Elm327 {
       protocolName: PROTOCOL_NAMES[protocol] ?? `Protocol ${protocol || '?'}`,
       bus: this.bus,
       voltage,
+      fastReplies: this.replyCount,
     };
   }
 

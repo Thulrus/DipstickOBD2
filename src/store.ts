@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { Elm327, ElmError, type AdapterInfo } from './elm/elm327';
 import { deleteSession, requestPersistence } from './log/db';
 import { Recorder } from './log/recorder';
-import type { Session } from './log/types';
+import type { Marker, Session } from './log/types';
 import { Poller, type Sample } from './obd/poller';
 import { ADAPTER_VOLTAGE_PID, DEFAULT_SIGNAL_IDS, SIGNALS, type Signal } from './obd/signals';
 import { defaultUnitSystem, type UnitSystem } from './obd/units';
@@ -29,6 +29,10 @@ export type Tab = 'live' | 'codes' | 'history' | 'settings';
 interface State {
   tab: Tab;
   status: 'idle' | 'connecting' | 'connected';
+  /** True while the final snapshot is being read before the link closes. */
+  disconnecting: boolean;
+  /** Markers added to the session being recorded. */
+  markers: Marker[];
   /** What the connect sequence is doing right now. */
   step: string;
   error: string | null;
@@ -79,6 +83,8 @@ function save(key: string, value: unknown): void {
 export const useApp = create<State>(() => ({
   tab: 'live',
   status: 'idle',
+  disconnecting: false,
+  markers: [],
   step: '',
   error: null,
   pickerDismissed: false,
@@ -239,7 +245,7 @@ export async function connect(kind: 'serial' | 'demo'): Promise<void> {
     void requestPersistence();
 
     supportedPids = pids;
-    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, live: {}, sessionId: session.id });
+    set({ status: 'connected', step: '', adapter, vin, available, codes, scan: null, live: {}, markers: [], sessionId: session.id });
     poller = new Poller(driver);
     poller.onSample = onSample;
     poller.onError = (e) => void cleanup(describe(e));
@@ -265,7 +271,7 @@ async function cleanup(error: string | null): Promise<void> {
   if (uiTimer) clearInterval(uiTimer);
   uiTimer = null;
   pendingLive = {};
-  set({ status: 'idle', step: '', error, samplesPerSecond: 0, sessionId: null, scanStep: '' });
+  set({ status: 'idle', disconnecting: false, step: '', error, samplesPerSecond: 0, sessionId: null, scanStep: '' });
   dropWakeLock();
   // Poller first, so it can't write to a transport that is closing under it.
   if (p) await Promise.race([p.stop(), new Promise((res) => setTimeout(res, 1500))]);
@@ -276,8 +282,36 @@ async function cleanup(error: string | null): Promise<void> {
   await t.close().catch(() => {});
 }
 
-export function disconnect(): Promise<void> {
-  return cleanup(null);
+/**
+ * User-requested disconnect. Reads the codes and light status one last time
+ * first, so the log shows whether anything changed during the session.
+ */
+export async function disconnect(): Promise<void> {
+  const [driver, p, r] = [elm, poller, recorder];
+  if (!driver || get().disconnecting) return;
+  set({ disconnecting: true });
+  try {
+    await p?.stop();
+    const endCodes = await Promise.race([readTroubleCodes(driver), new Promise<null>((res) => setTimeout(() => res(null), 8000))]);
+    if (endCodes && recorder === r) r?.update({ endCodes });
+  } catch {
+    /* the vehicle may already be off; the rest of the log is still good */
+  }
+  await cleanup(null);
+}
+
+export function addMarker(label: string): void {
+  const text = label.trim();
+  if (!recorder || !text) return;
+  recorder.addMarker(text);
+  set({ markers: [...(recorder.session.markers ?? [])] });
+}
+
+/** Replaces the signal selection, e.g. with one of the ready-made profiles. */
+export function selectSignals(ids: string[]): void {
+  save('dipstick.signals', ids);
+  set({ selected: ids });
+  poller?.setSignals(pollable());
 }
 
 export function setTab(tab: Tab): void {

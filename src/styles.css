@@ -400,7 +400,7 @@ dialog header {
   justify-content: flex-end;
 }
 
-.picker label,
+.picker li label,
 .radio {
   display: flex;
   align-items: center;
@@ -509,7 +509,8 @@ dd {
   color: var(--text-2);
 }
 
-textarea {
+textarea,
+input[type='text'] {
   font: inherit;
   font-size: 1rem;
   color: var(--text);
@@ -617,4 +618,21 @@ summary {
 
 table .unit {
   white-space: normal;
+}
+
+input[type='text'] {
+  min-height: 44px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A state name instead of a number: smaller, and allowed to wrap. */
+.tile .value.state {
+  font-size: 1.25rem;
+  white-space: normal;
+  min-height: 2.4em;
 }
