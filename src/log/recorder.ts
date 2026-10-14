@@ -38,7 +38,7 @@ export class Recorder {
   }
 
   /** Saves a change to the session record itself (codes, note). */
-  update(change: Partial<Pick<Session, 'codes' | 'scan' | 'modules' | 'endCodes' | 'note'>>): void {
+  update(change: Partial<Pick<Session, 'codes' | 'scan' | 'modules' | 'endCodes' | 'odometer' | 'note'>>): void {
     Object.assign(this.session, change);
     this.writing = this.writing.then(() => putSession({ ...this.session })).catch(() => {});
   }

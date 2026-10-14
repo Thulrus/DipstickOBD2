@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { PROFILES } from '../obd/profiles';
 import { SIGNAL_BY_ID, type Signal } from '../obd/signals';
 import { displayUnit, formatValue } from '../obd/units';
-import { addMarker, selectSignals, togglePin, toggleSignal, useApp, type LiveValue } from '../store';
+import { addMarker, selectSignals, setOdometer, togglePin, toggleSignal, useApp, type LiveValue } from '../store';
 import { ConnectPanel } from './ConnectPanel';
 
 export function Live() {
@@ -15,6 +15,7 @@ export function Live() {
   const pinned = useApp((s) => s.pinned);
   const screenAwake = useApp((s) => s.screenAwake);
   const markers = useApp((s) => s.markers);
+  const odometer = useApp((s) => s.odometer);
   const picker = useRef<HTMLDialogElement>(null);
   const marker = useRef<HTMLDialogElement>(null);
   const [markerText, setMarkerText] = useState('');
@@ -47,6 +48,8 @@ export function Live() {
   // Slow signals take only an occasional turn, so the fast ones set the pace.
   const fastCount = shown.filter((s) => s.rate === 'fast').length;
   const cycle = rate > 0 && fastCount > 0 ? fastCount / rate : null;
+  const shownIds = shown.map((s) => s.id).sort().join();
+  const profile = PROFILES.find((p) => [...p.pick(available)].sort().join() === shownIds)?.name ?? 'Custom';
 
   return (
     <>
@@ -58,6 +61,9 @@ export function Live() {
           <br />
           {screenAwake ? 'Screen will stay on' : 'Screen may turn off'}
           {markers.length > 0 && ` · ${markers.length} marker${markers.length === 1 ? '' : 's'}`}
+          <br />
+          Profile: {profile}
+          {cycle !== null && ` · fast signals every ${cycle.toFixed(1)} s`}
         </p>
         <div className="stack">
           <button onClick={() => picker.current?.showModal()}>Signals</button>
@@ -146,6 +152,10 @@ export function Live() {
           <button className="primary" disabled={!markerText.trim()}>
             Add marker
           </button>
+          <label className="field">
+            Odometer for this session
+            <input type="text" inputMode="numeric" defaultValue={odometer} placeholder="e.g. 113,204 mi" onBlur={(e) => setOdometer(e.target.value)} />
+          </label>
         </form>
       </dialog>
     </>

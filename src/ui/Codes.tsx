@@ -3,6 +3,7 @@ import { toReport } from '../log/export';
 import { dtcArea } from '../obd/dtc';
 import type { ModuleScan } from '../obd/modules';
 import { SIGNALS } from '../obd/signals';
+import { selfTestName } from '../obd/vehicles';
 import { displayUnit, formatValue } from '../obd/units';
 import { clearCodes, refreshCodes, scanAllModules, stopModuleScan, useApp } from '../store';
 import { download } from './download';
@@ -180,6 +181,11 @@ export function Codes() {
             {failed.length === 0 ? `All ${tests.length} are within limits.` : `${failed.length} of ${tests.length} are outside limits.`} Values
             are raw numbers from the engine computer.
           </p>
+          {(scan?.monitorTestsExpected ?? 0) > tests.length && (
+            <p className="note">
+              <b>Incomplete:</b> {(scan?.monitorTestsExpected ?? 0) - tests.length} more did not answer. Tap Read again to retry.
+            </p>
+          )}
           <details open={failed.length > 0}>
             <summary>Show {tests.length} results</summary>
             <div className="scroll">
@@ -196,8 +202,11 @@ export function Codes() {
                   {[...failed, ...tests.filter((t) => t.passed)].map((t, i) => (
                     <tr key={i}>
                       <th>
-                        {t.monitor}
-                        <span className="unit"> {t.test}</span>
+                        {selfTestName(vin, t) ?? t.monitor}
+                        <span className="unit">
+                          {' '}
+                          {selfTestName(vin, t) ? `${t.monitor}, ${t.test}` : t.test}
+                        </span>
                       </th>
                       <td>{t.value}</td>
                       <td>{t.min !== null && t.max !== null ? `${t.min} to ${t.max}` : t.min !== null ? `≥ ${t.min}` : `≤ ${t.max}`}</td>

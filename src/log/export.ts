@@ -2,7 +2,8 @@ import type { ModuleScan } from '../obd/modules';
 import type { VehicleScan } from '../obd/scan';
 import { SIGNAL_BY_ID, SIGNALS, type Signal } from '../obd/signals';
 import { displayUnit, formatValue, toDisplay, type UnitSystem } from '../obd/units';
-import type { TroubleCodes } from '../obd/vehicle';
+import { selfTestName } from '../obd/vehicles';
+import { codesWereRead, type TroubleCodes } from '../obd/vehicle';
 import { toSeries, type SampleColumns, type Series, type Session, type VehicleInfo } from './types';
 
 /**
@@ -61,7 +62,8 @@ function csvHeader(session: Session, units: UnitSystem, columns: string): string
   const c = session.codes;
   if (c) out.push(`# codes at start: stored=${c.stored.join(' ') || 'none'} pending=${c.pending.join(' ') || 'none'} check_engine_light=${c.status ? (c.status.mil ? 'on' : 'off') : 'unknown'}`);
   const e = session.endCodes;
-  if (e) out.push(`# codes at end: stored=${e.stored.join(' ') || 'none'} pending=${e.pending.join(' ') || 'none'} check_engine_light=${e.status ? (e.status.mil ? 'on' : 'off') : 'unknown'}`);
+  if (codesWereRead(e)) out.push(`# codes at end: stored=${e.stored.join(' ') || 'none'} pending=${e.pending.join(' ') || 'none'} check_engine_light=${e.status ? (e.status.mil ? 'on' : 'off') : 'unknown'}`);
+  else if (e !== undefined) out.push('# codes at end: not read (the vehicle had stopped answering, e.g. ignition already off)');
   for (const id of session.signalIds) {
     const states = SIGNAL_BY_ID.get(id)?.states;
     if (states) out.push(`# ${id} values: ${Object.entries(states).map(([k, v]) => `${k}=${v}`).join('; ')}`);
@@ -177,7 +179,7 @@ function sessionHeader(session: Session, units: UnitSystem) {
     odometer: session.odometer ?? '',
     note: session.note,
     markers: (session.markers ?? []).map((m) => ({ timeSeconds: m.t / 1000, label: m.label })),
-    troubleCodesAtEnd: session.endCodes && {
+    troubleCodesAtEnd: codesWereRead(session.endCodes) && {
       checkEngineLight: session.endCodes.status?.mil ?? null,
       stored: session.endCodes.stored,
       pending: session.endCodes.pending,
@@ -197,17 +199,19 @@ function sessionHeader(session: Session, units: UnitSystem) {
 }
 
 /** Signal values (metric, keyed by id) as labelled rows in the chosen units. */
-function valueRows(values: Record<string, number>, units: UnitSystem): { signal: Signal; text: string; unit: string }[] {
+function valueRows(values: Record<string, number>, units: UnitSystem, raw?: Record<string, string>): { signal: Signal; text: string; unit: string; raw: string }[] {
   return SIGNALS.filter((s) => values[s.id] !== undefined).map((signal) => ({
     signal,
-    text: formatValue(signal, values[signal.id]!, units),
+    // Show what a state code means; the number alone is useless to a reader.
+    text: signal.states ? `${values[signal.id]} (${signal.states[values[signal.id]!] ?? 'unknown state'})` : formatValue(signal, values[signal.id]!, units),
     unit: displayUnit(signal, units),
+    raw: raw?.[signal.id] ?? '',
   }));
 }
 
 function scanForJson(scan: VehicleScan, units: UnitSystem) {
   const values = (v: Record<string, number>) =>
-    valueRows(v, units).map((r) => ({ id: r.signal.id, name: r.signal.name, value: Number(r.text), unit: r.unit }));
+    valueRows(v, units).map((r) => ({ id: r.signal.id, name: r.signal.name, value: parseFloat(r.text), unit: r.unit }));
   return {
     read: new Date(scan.readAt).toISOString(),
     obdStandard: scan.obdStandard,
@@ -276,7 +280,7 @@ export function toReport(
     );
     if (codes.milDistanceKm != null) {
       const far = units === 'imperial' ? `${Math.round(codes.milDistanceKm * 0.621371)} mi` : `${codes.milDistanceKm} km`;
-      out.push(`- Distance driven with the light on: ${far}`);
+      out.push(`- Distance driven with the light on: ${far}${codes.milDistanceRaw ? ` (raw bytes, ${codes.milDistanceRaw})` : ''}`);
     }
     out.push('');
     const monitors = codes.status?.monitors ?? [];
@@ -293,12 +297,12 @@ export function toReport(
   }
   if (scan.freezeFrame) {
     out.push('## Freeze frame', '', `Sensor values saved by the engine computer when ${scan.freezeFrame.dtc} was recorded.`, '');
-    table(['Signal', 'Value', 'Unit'], valueRows(scan.freezeFrame.values, units).map((r) => [r.signal.name, r.text, r.unit]));
+    table(['Signal', 'Value', 'Unit', 'Raw bytes'], valueRows(scan.freezeFrame.values, units, scan.freezeFrame.raw).map((r) => [r.signal.name, r.text, r.unit, r.raw]));
   }
-  const now = valueRows(scan.snapshot, units);
+  const now = valueRows(scan.snapshot, units, scan.snapshotRaw);
   if (now.length) {
     out.push('## Current values', '', `One reading of every sensor the vehicle supports, taken ${new Date(scan.readAt).toLocaleString()}.`, '');
-    table(['Signal', 'Value', 'Unit'], now.map((r) => [r.signal.name, r.text, r.unit]));
+    table(['Signal', 'Value', 'Unit', 'Raw bytes'], now.map((r) => [r.signal.name, r.text, r.unit, r.raw]));
   }
   if (scan.monitorTests.length) {
     const failed = scan.monitorTests.filter((t) => !t.passed).length;
@@ -308,10 +312,17 @@ export function toReport(
       `The vehicle's own component tests: ${failed} of ${scan.monitorTests.length} outside limits. Numbers are raw and unscaled; "Unit id" is the SAE J1979 unit-and-scaling id.`,
       '',
     );
+    const missing = (scan.monitorTestsExpected ?? 0) - scan.monitorTests.length;
+    if (missing > 0) {
+      out.push(`**Incomplete: ${missing} more test${missing === 1 ? '' : 's'} did not answer after three tries. Absence from this table is not a pass.**`, '');
+    }
     const n = (v: number | null) => (v === null ? '' : String(v));
     table(
       ['Monitor', 'Test', 'Value', 'Min', 'Max', 'Unit id', 'Result', 'Raw bytes'],
-      scan.monitorTests.map((t) => [t.monitor, t.test, String(t.value), n(t.min), n(t.max), t.unitId ?? '', t.passed ? 'Pass' : 'FAIL', t.raw ?? '']),
+      scan.monitorTests.map((t) => {
+        const name = selfTestName(vehicle.vin, t);
+        return [name ? `${name} (${t.monitor})` : t.monitor, t.test, String(t.value), n(t.min), n(t.max), t.unitId ?? '', t.passed ? 'Pass' : 'FAIL', t.raw ?? ''];
+      }),
     );
   }
   return out.join('\n');
@@ -342,7 +353,7 @@ export function toSummary(session: Session, samples: SampleColumns, units: UnitS
   if (session.note) out.push(`- Note: ${session.note}`);
   out.push('', toReport(session.vehicle, session.codes, session.scan, units, session.modules));
   const end = session.endCodes;
-  if (end) {
+  if (codesWereRead(end)) {
     out.push(
       '## At the end of the session',
       '',
@@ -352,6 +363,8 @@ export function toSummary(session: Session, samples: SampleColumns, units: UnitS
       `- Readiness monitors not complete: ${end.status?.monitors.filter((m) => !m.complete).map((m) => m.name).join(', ') || 'none'}`,
       '',
     );
+  } else if (end !== undefined) {
+    out.push('## At the end of the session', '', 'Not read: the vehicle had stopped answering (for example, the ignition was already off). This says nothing about the codes.', '');
   }
   if (session.markers?.length) {
     out.push('## Markers', '', 'Notes the driver stamped on the log as things happened.', '');
